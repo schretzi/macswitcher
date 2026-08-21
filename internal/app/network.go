@@ -152,7 +152,7 @@ func writeUnboundForwarders(cfg Config, forwarders []string) error {
 	if strings.TrimSpace(cfg.Unbound.ForwardersFile) == "" {
 		return errors.New("unbound.forwarders_file is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.Unbound.ForwardersFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Unbound.ForwardersFile), 0o750); err != nil {
 		return err
 	}
 	info, err := os.Lstat(cfg.Unbound.ForwardersFile)
@@ -176,5 +176,5 @@ func writeUnboundForwarders(cfg Config, forwarders []string) error {
 		lines = append(lines, "  forward-addr: "+f)
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(cfg.Unbound.ForwardersFile, []byte(content), 0o644)
+	return os.WriteFile(cfg.Unbound.ForwardersFile, []byte(content), 0o644) // #nosec G306 -- must stay readable by the unbound service, which may run under a different system user
 }

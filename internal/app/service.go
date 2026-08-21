@@ -31,12 +31,12 @@ func serviceInstall() error {
 		return fmt.Errorf("alpaca executable not found in PATH: %w", err)
 	}
 	launchAgentsDir := filepath.Join(home, "Library", "LaunchAgents")
-	if err := os.MkdirAll(launchAgentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(launchAgentsDir, 0o750); err != nil {
 		return err
 	}
 	plistPath := filepath.Join(launchAgentsDir, launchAgentLabel+".plist")
 	logDir := filepath.Join(home, "Library", "Logs", "macswitcher")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return err
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -67,7 +67,7 @@ func serviceInstall() error {
 </dict>
 </plist>
 `, launchAgentLabel, xmlEscape(exe), xmlEscape(filepath.Join(logDir, "proxy.out.log")), xmlEscape(filepath.Join(logDir, "proxy.err.log")), xmlEscape(alpacaPath))
-	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
 		return err
 	}
 	fmt.Printf("installed launch agent: %s\n", plistPath)
@@ -80,14 +80,14 @@ func isGoRunExecutable(path string) bool {
 }
 
 func installExecutable(source, destination string) error {
-	content, err := os.ReadFile(source)
+	content, err := os.ReadFile(source) // #nosec G304 -- source is the currently running executable's own os.Executable() path
 	if err != nil {
 		return fmt.Errorf("read executable %q: %w", source, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return err
 	}
-	if err := os.WriteFile(destination, content, 0o755); err != nil {
+	if err := os.WriteFile(destination, content, 0o700); err != nil { // #nosec G306,G703 -- must remain executable by the owner; destination is derived from a fixed ~/.local/bin/macswitcher path, not external input
 		return fmt.Errorf("install executable %q: %w", destination, err)
 	}
 	return nil
@@ -193,7 +193,7 @@ func xmlEscape(s string) string {
 }
 
 func runCommand(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 -- args are macswitcher-internal command definitions from trusted config/system calls, not raw user input
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -210,7 +210,7 @@ func runCommandList(parts []string) error {
 }
 
 func runCommandOutput(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 -- args are macswitcher-internal command definitions from trusted config/system calls, not raw user input
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("command failed: %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(b)))

@@ -16,7 +16,7 @@ func updateZshProxy(proxyURL, noProxy string, enable bool) error {
 		return err
 	}
 	rcDir := filepath.Join(home, ".zsh", "rcs")
-	if err := os.MkdirAll(rcDir, 0o755); err != nil {
+	if err := os.MkdirAll(rcDir, 0o750); err != nil {
 		return err
 	}
 	rcPath := filepath.Join(rcDir, "proxy")
@@ -56,29 +56,7 @@ func updateZshProxy(proxyURL, noProxy string, enable bool) error {
 		"",
 	}, "\n")
 
-	return os.WriteFile(rcPath, []byte(content), 0o644)
-}
-
-func removeManagedZshBlock(content string) string {
-	start := "# >>> macswitcher >>>"
-	end := "# <<< macswitcher <<<"
-	for {
-		s := strings.Index(content, start)
-		if s == -1 {
-			break
-		}
-		e := strings.Index(content[s:], end)
-		if e == -1 {
-			content = content[:s]
-			break
-		}
-		e += s + len(end)
-		if e < len(content) && content[e] == '\n' {
-			e++
-		}
-		content = content[:s] + content[e:]
-	}
-	return content
+	return os.WriteFile(rcPath, []byte(content), 0o600)
 }
 
 func updateDockerProxy(proxyURL, noProxy string, enable bool) error {
@@ -87,11 +65,11 @@ func updateDockerProxy(proxyURL, noProxy string, enable bool) error {
 		return err
 	}
 	dockerConfig := filepath.Join(home, ".docker", "config.json")
-	if err := os.MkdirAll(filepath.Dir(dockerConfig), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dockerConfig), 0o750); err != nil {
 		return err
 	}
 	obj := map[string]any{}
-	if b, err := os.ReadFile(dockerConfig); err == nil {
+	if b, err := os.ReadFile(dockerConfig); err == nil { // #nosec G304 -- fixed path under the user's own home dir
 		if len(strings.TrimSpace(string(b))) > 0 {
 			if err := json.Unmarshal(b, &obj); err != nil {
 				return fmt.Errorf("parse docker config: %w", err)
@@ -131,7 +109,7 @@ func updateDockerProxy(proxyURL, noProxy string, enable bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dockerConfig, append(b, '\n'), 0o644)
+	return os.WriteFile(dockerConfig, append(b, '\n'), 0o600)
 }
 
 func syncContextApplications(cfg Config, ctx SwitchContext) error {

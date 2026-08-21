@@ -117,7 +117,7 @@ func initConfig(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("config already exists at %s", path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	cfg := Config{
@@ -199,7 +199,7 @@ func saveRuntimeState(path string, state ConfigState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(path), append(b, '\n'), 0o644)
+	return os.WriteFile(statePath(path), append(b, '\n'), 0o600)
 }
 
 func currentNetworkLocation() string {
@@ -225,7 +225,7 @@ func currentNetworkServices() []string {
 }
 
 func currentUnboundForwarders(path string) []string {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is the configured Unbound forwarders file, an operator-controlled setting
 	if err != nil {
 		return nil
 	}
@@ -332,13 +332,13 @@ func saveConfig(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(contextsPath(path), 0o755); err != nil {
+	if err := os.MkdirAll(contextsPath(path), 0o750); err != nil {
 		return err
 	}
 	for name, context := range cfg.Contexts {
@@ -347,7 +347,7 @@ func saveConfig(path string, cfg Config) error {
 			return fmt.Errorf("encode context %q: %w", name, err)
 		}
 		contextPath := filepath.Join(contextsPath(path), name+".yaml")
-		if err := os.WriteFile(contextPath, append(contextBytes, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(contextPath, append(contextBytes, '\n'), 0o600); err != nil {
 			return fmt.Errorf("write context %q: %w", name, err)
 		}
 	}

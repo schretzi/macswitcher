@@ -60,7 +60,7 @@ func probeProxyAuth(proxyAddr, targetURL string) ([]string, int, string, error) 
 	if !strings.Contains(proxyURL, "://") {
 		proxyURL = "http://" + proxyURL
 	}
-	cmd := exec.Command("curl", "-sS", "-o", "/dev/null", "-D", "-", "-x", proxyURL, "--max-time", "12", targetURL)
+	cmd := exec.Command("curl", "-sS", "-o", "/dev/null", "-D", "-", "-x", proxyURL, "--max-time", "12", targetURL) // #nosec G204 -- fixed "curl" binary; args are constructed proxy/target URLs, not passed through a shell
 	b, err := cmd.CombinedOutput()
 	raw := string(b)
 	statusCode := parseHTTPStatus(raw)
@@ -163,7 +163,7 @@ func runProxy(cfgPath string) error {
 	if len(cmdArgs) == 0 {
 		return errors.New("alpaca command is empty")
 	}
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- cmdArgs come from the operator-controlled config file (Alpaca command), not untrusted input
 	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && strings.TrimSpace(ctx.Kerberos.TicketFile) != "" {
 		ticketFile := strings.TrimSpace(ctx.Kerberos.TicketFile)
 		if strings.HasPrefix(ticketFile, "~/") {
@@ -385,7 +385,7 @@ func keychainPasswordSet(cfgPath string) error {
 	}
 	fmt.Printf("setting keychain password for service=%q account=%q\n", service, account)
 	fmt.Println("a macOS keychain prompt may appear")
-	cmd := exec.Command("security", "add-generic-password", "-U", "-s", service, "-a", account, "-w")
+	cmd := exec.Command("security", "add-generic-password", "-U", "-s", service, "-a", account, "-w") // #nosec G204 -- fixed macOS "security" binary; service/account come from trusted config
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -400,7 +400,7 @@ func keychainPasswordGet(service, account string) (string, error) {
 	if strings.TrimSpace(account) != "" {
 		args = append(args, "-a", account)
 	}
-	cmd := exec.Command("security", args...)
+	cmd := exec.Command("security", args...) // #nosec G204 -- fixed macOS "security" binary; args come from trusted config
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("read keychain password failed for service=%q account=%q: %w", service, account, err)
