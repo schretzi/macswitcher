@@ -44,14 +44,38 @@ release:
     owner: schretzi
     name: macswitcher
 
-brews:
+# Casks, not formulas: `brews` was deprecated in goreleaser v2.16 in favour
+# of `homebrew_casks`, which is the tool Homebrew expects for distributing
+# pre-compiled binaries (and gets completions/manpages/post-install hooks
+# that `brews` never had).
+homebrew_casks:
   - name: macswitcher
+    # Publishes to github.com/schretzi/homebrew-tap, so users can
+    # `brew install schretzi/tap/macswitcher`. That repository must exist,
+    # and the release workflow needs a HOMEBREW_TAP_TOKEN secret with write
+    # access to it (the default GITHUB_TOKEN only covers this repo).
     repository:
       owner: schretzi
       name: homebrew-tap
+      branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
     homepage: https://github.com/schretzi/macswitcher
     description: Manage macOS network contexts, DNS, and proxy services
     license: MIT
+
+    binaries:
+      - macswitcher
+
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            # The release binaries are not notarized, so Gatekeeper would
+            # otherwise refuse to run them after a browser-less download.
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/macswitcher"]
+          end
 
