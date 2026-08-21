@@ -1,0 +1,53 @@
+# goreleaser config for macswitcher.
+#
+# macswitcher shells out to macOS-only binaries (networksetup, launchctl,
+# etc.) at runtime, but the Go code itself has no cgo or build tags, so pure
+# cross-compilation to darwin/amd64 and darwin/arm64 from any runner works.
+# No macOS runner is required for the release job.
+version: 2
+
+builds:
+  - id: macswitcher
+    main: ./cmd/macswitcher
+    binary: macswitcher
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: macswitcher
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: schretzi
+    name: macswitcher
+
+brews:
+  - name: macswitcher
+    repository:
+      owner: schretzi
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/schretzi/macswitcher
+    description: Manage macOS network contexts, DNS, and proxy services
+    license: MIT
+

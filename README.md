@@ -1,0 +1,148 @@
+# macswitcher
+
+`macswitcher` switches macOS network contexts and keeps DNS, Unbound, proxy,
+Alpaca, Kerberos, and application lifecycle settings together for each location.
+
+## Build
+
+```sh
+go build -o macswitcher ./cmd/macswitcher
+```
+
+Requires macOS, Go 1.23+, `alpaca`, and optionally Docker Desktop and Unbound.
+
+## Install
+
+```sh
+brew install schretzi/tap/macswitcher
+```
+
+(published to [schretzi/homebrew-tap](https://github.com/schretzi/homebrew-tap)
+by the release pipeline; see [Releasing](#releasing) below)
+
+## Configuration
+
+Installation is managed by the MacbookSetup Ansible repository. The CLI reads
+the linked global file and context files from:
+
+```text
+~/.config/macswitcher/config.yaml
+~/.config/macswitcher/contexts/home.yaml
+~/.config/macswitcher/contexts/remote.yaml
+~/.config/macswitcher/contexts/work.yaml
+```
+
+`config.yaml` contains app-global settings such as the local proxy,
+network-service defaults, application lifecycle commands (including Docker),
+and the shared Alpaca binary and command. Context files contain only
+location-specific overrides and references to those named applications. The
+private and work overlays supply their own context files; the public repository
+contains only generic defaults and an empty work starter.
+
+```yaml
+mac_network_location: Automatic
+dns:
+  network_services: []
+  resolvers:
+    - 127.0.0.2
+proxy_mode: direct
+apps:
+  reload:
+    - unbound
+```
+
+The global and context configuration files use YAML. Runtime context selection
+is kept separately in `state.json`; Docker's own `~/.docker/config.json` also
+remains JSON. The global file contains shared local-proxy, Alpaca, DNS, Unbound,
+and application commands. Context files contain the active mode,
+optional `forwarder_proxy` settings, and application action lists. Actions are
+explicit: `start`, `stop`, `restart`, and `reload`. A reload is used when the
+application supports hot reloading; the switcher does not automatically stop
+and start applications for every context change. If an application has no
+explicit `restart` or `reload` command, but has both `stop` and `start`
+commands, those are used as a fallback.
+
+`proxy_mode: direct` is the default: the local proxy is used without an
+upstream forwarder. A context forwards traffic only when it defines a
+`forwarder_proxy` block. Use `proxy_mode: off` to disable local proxy wiring
+entirely. Forwarder credentials are read from the macOS Keychain.
+
+The public config contains no environment-specific IPs, hostnames, usernames,
+PAC URLs, or proxy credentials. Put those values in the private/work overlays.
+Secrets are read from macOS Keychain at runtime; they are never configuration
+file values.
+
+For a machine not managed by Ansible, `macswitcher config init` creates a
+`home` context from the current macOS network location, network services, DNS
+resolver, and readable Unbound forwarders, plus an intentionally empty `work`
+context.
+
+Unbound forwarders are managed at
+`/opt/homebrew/etc/unbound/conf.d/forwarders.conf`. Ansible initially links
+this path to its default `Dotfiles/unbound/forwarders.conf`. Before writing
+context-specific forwarders, macswitcher removes only that symlink and creates
+a real runtime-managed file, so the repository source is never modified.
+
+Store forwarder proxy credentials in Keychain:
+
+```sh
+./macswitcher proxy password-set
+```
+
+Validate all global and context files with `./macswitcher config validate`.
+
+## Commands
+
+```sh
+./macswitcher switch home
+./macswitcher switch remote
+./macswitcher switch work
+./macswitcher status
+./macswitcher proxy set
+./macswitcher proxy unset
+./macswitcher proxy detect-auth --proxy '<proxy-host>:<port>'
+./macswitcher service install
+./macswitcher service start
+./macswitcher service restart
+./macswitcher service status
+```
+
+Legacy aggregate configuration files are read for migration; the next write
+stores contexts under `contexts/`.
+
+## Development
+
+```sh
+lefthook install       # one-time per clone: enables the gitleaks pre-commit hook
+make pipeline          # fmt, lint, security (govulncheck + gosec), test, build
+make docs              # regenerate command docs under docs/
+```
+
+CI (`.github/workflows/ci.yml`) mirrors `make pipeline` with separate `test`,
+`lint`, `security`, and `build` jobs on every push and pull request to `main`.
+
+### Releasing
+
+Releases are built with [goreleaser](https://goreleaser.com) and are
+manual-only, never automatic on tag push:
+
+```sh
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Then go to Actions → Release → Run workflow, selecting that tag. This builds
+darwin binaries, publishes a GitHub release, and updates the Homebrew formula
+in [schretzi/homebrew-tap](https://github.com/schretzi/homebrew-tap) (requires
+a `HOMEBREW_TAP_TOKEN` repo secret with write access to that tap repo).
+
+## AI usage
+
+Parts of this project's scaffolding (CI pipeline, goreleaser config, Makefile,
+lefthook/gitleaks hook, and Cobra doc generator) were added with GitHub
+Copilot CLI. Architecture and tool choices (GitHub Actions, goreleaser, gitleaks, Homebrew tap)
+were decided jointly after researching the actual behavior of each tool
+locally; the generated configuration was verified end-to-end by running the
+local pipeline (`make pipeline`), a goreleaser snapshot build, and a live
+gitleaks pre-commit test, rather than assumed to work.
+
