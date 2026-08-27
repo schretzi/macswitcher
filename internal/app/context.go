@@ -38,9 +38,14 @@ func switchContext(cfgPath string, args []string) error {
 		if err := writeUnboundForwarders(cfg, ctx.UnboundForwarders); err != nil {
 			return err
 		}
+		restartUnboundIfConfigured(cfg)
 	}
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err
+	}
+	flushDNSCache()
+	if err := checkDNSResolution(ctx); err != nil {
+		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check unbound, VPN, network location) and rerun `macswitcher switch %s`", err, selected)
 	}
 	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) {
 		if err := unsetLocalProxy(cfgPath); err != nil {

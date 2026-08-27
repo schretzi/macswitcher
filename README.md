@@ -185,6 +185,42 @@ Validate all global and context files with `./macswitcher config validate`.
 Legacy aggregate configuration files are read for migration; the next write
 stores contexts under `contexts/`.
 
+### What `switch` actually does
+
+`macswitcher switch <context>` runs, in order:
+
+1. Persist the selected context as current (survives even if later steps warn/fail).
+2. `scselect` the context's macOS network location, if set (warns, doesn't abort, on failure).
+3. Rewrite `unbound.forwarders_file` from the context's `unbound_forwarders`, if any.
+4. If forwarders were rewritten, restart unbound via `applications.unbound.restart`
+   (warns if that's not configured — a stale `forwarders.conf` load is a
+   common source of "it takes forever after switching" symptoms).
+5. Point the network services' DNS servers at `dns.local_resolver` (or the
+   context's `dns.resolvers` override).
+6. Flush the system DNS cache (`dscacheutil -flushcache` +
+   `killall -HUP mDNSResponder`, both via `sudo -n` — see below).
+7. **Verify DNS actually works** before touching the proxy: resolve
+   `google.com` for `off`/`direct` modes, or the forward proxy's own
+   `proxy_server` hostname for `forward` mode. If this fails, `switch` stops
+   here with an error and a hint to fix DNS and rerun — none of the
+   remaining steps (proxy service, app sync) can work with broken DNS
+   anyway.
+8. Stop (if `proxy_mode: off`) or restart (otherwise) the Alpaca service,
+   then set or unset the local proxy accordingly.
+9. Run the context's `apps.stop`/`restart`/`reload`/`start` hooks.
+
+Steps 4 and 6 shell out to `sudo -n ...` (non-interactive), so they need
+matching passwordless-sudo sudoers entries, e.g.:
+
+```
+your-user ALL=(root) NOPASSWD: /usr/bin/dscacheutil -flushcache
+your-user ALL=(root) NOPASSWD: /usr/bin/killall -HUP mDNSResponder
+your-user ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/net.unbound
+```
+
+Without these, steps 4/6 just print a warning and `switch` continues; step 7
+will then fail fast if DNS genuinely isn't working yet.
+
 ## Observe
 
 `macswitcher observe` opens a terminal UI (built with

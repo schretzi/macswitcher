@@ -148,6 +148,74 @@ func applyLocalResolverDNS(cfg Config) error {
 	return nil
 }
 
+// restartUnboundIfConfigured runs the applications.unbound restart command
+// (if configured) after forwarders.conf has been rewritten, so unbound
+// actually picks up the new forward-addr entries instead of continuing to
+// answer from stale cached upstreams. It is best-effort: a missing restart
+// command, or the command failing, only produces a warning here, because
+// checkDNSResolution (run right after) is what actually verifies whether
+// DNS is working before the switch is allowed to continue.
+func restartUnboundIfConfigured(cfg Config) {
+	commands, ok := cfg.Applications["unbound"]
+	if !ok || len(commands.Restart) == 0 {
+		fmt.Println("warning: no applications.unbound.restart configured; unbound may keep serving stale forwarders")
+		return
+	}
+	if err := runApplicationAction("unbound", "restart", commands); err != nil {
+		fmt.Printf("warning: could not restart unbound: %v\n", err)
+	}
+}
+
+// flushDNSCache flushes macOS's system DNS cache (dscacheutil) and asks
+// mDNSResponder to reload (SIGHUP), the standard two-step "flush_dns"
+// sequence needed after DNS servers or unbound forwarders change - without
+// it, in-flight lookups and cached negative/stale answers can linger for
+// minutes. Both commands typically need root; if the operator hasn't set up
+// passwordless sudo for them, this only warns; checkDNSResolution is what
+// actually decides whether the switch can continue.
+func flushDNSCache() {
+	if err := runCommand("sudo", "-n", "/usr/bin/dscacheutil", "-flushcache"); err != nil {
+		fmt.Printf("warning: dscacheutil -flushcache failed (add \"NOPASSWD: /usr/bin/dscacheutil -flushcache\" to sudoers?): %v\n", err)
+	}
+	if err := runCommand("sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"); err != nil {
+		fmt.Printf("warning: killall -HUP mDNSResponder failed (add \"NOPASSWD: /usr/bin/killall -HUP mDNSResponder\" to sudoers?): %v\n", err)
+	}
+}
+
+// checkDNSResolution verifies that DNS is actually working before the
+// switch proceeds any further: google.com for off/direct proxy modes, or the
+// forward proxy's own hostname for forward mode (since the rest of the
+// switch is pointless if the upstream proxy itself can't be resolved). It
+// shells out to dscacheutil rather than using net.LookupHost because release
+// builds have CGO_ENABLED=0, so Go's resolver falls back to reading
+// /etc/resolv.conf, which macOS does not keep in sync with the resolvers set
+// via `networksetup -setdnsservers`.
+func checkDNSResolution(ctx SwitchContext) error {
+	host := "google.com"
+	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
+		host = strings.TrimSpace(ctx.ForwarderProxy.ProxyServer)
+		if host == "" {
+			return errors.New("proxy_mode is forward but forwarder_proxy.proxy_server is empty")
+		}
+	}
+	out, err := runCommandOutput("dscacheutil", "-q", "host", "-a", "name", host)
+	if err != nil {
+		return fmt.Errorf("dscacheutil -q host -a name %s failed: %w", host, err)
+	}
+	if !dscacheutilOutputHasAddress(out) {
+		return fmt.Errorf("%s did not resolve", host)
+	}
+	return nil
+}
+
+// dscacheutilOutputHasAddress reports whether dscacheutil's `-q host`
+// output contains at least one resolved address. dscacheutil always exits 0
+// (even for an unresolvable host), so success has to be judged from the
+// output content, not the exit code.
+func dscacheutilOutputHasAddress(out string) bool {
+	return strings.Contains(out, "ip_address:") || strings.Contains(out, "ipv6_address:")
+}
+
 func writeUnboundForwarders(cfg Config, forwarders []string) error {
 	if strings.TrimSpace(cfg.Unbound.ForwardersFile) == "" {
 		return errors.New("unbound.forwarders_file is empty")
