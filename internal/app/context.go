@@ -91,6 +91,12 @@ func configValidate(cfgPath string) error {
 	}
 	critical := make([]string, 0)
 	warnings := make([]string, 0)
+	daemonWarnings, err := daemonsConfigWarnings(cfgPath)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("could not check daemons: block for typos: %v", err))
+	} else {
+		warnings = append(warnings, daemonWarnings...)
+	}
 	for name, ctx := range cfg.Contexts {
 		if isEmptyContext(ctx) {
 			continue

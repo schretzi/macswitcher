@@ -19,6 +19,7 @@ type Config struct {
 	NetworkServices []string                       `yaml:"network_services" mapstructure:"network_services"`
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
 	Unbound         UnboundConfig                  `yaml:"unbound" mapstructure:"unbound"`
+	Daemons         DaemonsConfig                  `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
 	Contexts        map[string]SwitchContext       `yaml:"-" mapstructure:"-"`
 }
@@ -69,6 +70,36 @@ type ApplicationCommands struct {
 
 type UnboundConfig struct {
 	ForwardersFile string `yaml:"forwarders_file" mapstructure:"forwarders_file"`
+}
+
+// DaemonConfig identifies a launchd agent that `macswitcher observe` can show
+// and control alongside macswitcher's own Alpaca agent. It is not installed
+// by macswitcher itself: its plist is expected to already exist at the
+// standard per-scope path (e.g. installed by Homebrew or by an external
+// Ansible role). Leave Label empty to hide it from `observe` as "not
+// configured".
+type DaemonConfig struct {
+	Label string `yaml:"label,omitempty" mapstructure:"label"`
+	// Scope is "user" (default): a per-user LaunchAgent loaded in the gui/<uid>
+	// domain from ~/Library/LaunchAgents/<label>.plist. Set to "system" for a
+	// LaunchDaemon loaded in the system domain from
+	// /Library/LaunchDaemons/<label>.plist; start/stop/enable/disable on a
+	// system-scoped daemon run under sudo with an interactive password prompt.
+	Scope string `yaml:"scope,omitempty" mapstructure:"scope"`
+	// Interface is optional and only used by the vpn row: a network
+	// interface name (e.g. "utun99") that observe checks for a live inet
+	// address, since a running VPN supervisor process doesn't guarantee the
+	// tunnel itself is actually up.
+	Interface string `yaml:"interface,omitempty" mapstructure:"interface"`
+}
+
+// DaemonsConfig lists the external daemons `macswitcher observe` can show,
+// beyond macswitcher's own Alpaca launch agent (always shown).
+type DaemonsConfig struct {
+	Unbound           DaemonConfig `yaml:"unbound" mapstructure:"unbound"`
+	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
+	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
+	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
 }
 
 type ForwarderProxyConfig struct {
@@ -301,6 +332,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.Unbound.ForwardersFile == "" {
 		cfg.Unbound.ForwardersFile = "/opt/homebrew/etc/unbound/conf.d/forwarders.conf"
+	}
+	if cfg.Daemons.Unbound.Label == "" {
+		cfg.Daemons.Unbound.Label = "homebrew.mxcl.unbound"
 	}
 	if cfg.LocalProxy.Host == "" || cfg.LocalProxy.Port <= 0 {
 		return cfg, errors.New("invalid local_proxy values")

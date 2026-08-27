@@ -179,10 +179,87 @@ Validate all global and context files with `./macswitcher config validate`.
 ./macswitcher service start
 ./macswitcher service restart
 ./macswitcher service status
+./macswitcher observe
 ```
 
 Legacy aggregate configuration files are read for migration; the next write
 stores contexts under `contexts/`.
+
+## Observe
+
+`macswitcher observe` opens a terminal UI (built with
+[Bubble Tea](https://github.com/charmbracelet/bubbletea)) showing the live
+status of every daemon macswitcher cares about, refreshed automatically every
+5 seconds:
+
+- **alpaca** — macswitcher's own launch agent (`com.macswitcher.proxy`,
+  installed by `service install`). Shows running/stopped, pid, uptime, the
+  launchd restart counter (`runs`), and the active context's `proxy_mode`
+  plus, in `forward` mode, the upstream host:port and whether auth is
+  Keychain- or Kerberos-based.
+- **unbound** — shows running/stopped and the `forward-addr` entries
+  currently in `unbound.forwarders_file`.
+- **kerberoskeepalive** — shows running/stopped and, for the active
+  context's `forwarder_proxy.ticket_file`, whether `klist` reports a valid,
+  non-expired ticket.
+- **omt** — shown only if the `omt` binary is on `PATH`; runs `omt status`
+  and summarizes how many configured OAuth2 accounts have a valid token.
+- **vpn** — a generic LaunchAgent-supervised VPN connection (e.g. an
+  `openconnect` wrapper script). Shows running/stopped, and, if
+  `daemons.vpn.interface` is set, whether that tunnel interface currently
+  has an address (a running supervisor process doesn't guarantee the
+  tunnel actually came up).
+
+unbound, KerberosKeepAlive, omt, and vpn are not installed by macswitcher
+(they come from Homebrew or an external Ansible role/script), so their
+launchd labels must be configured explicitly:
+
+```yaml
+daemons:
+  unbound:
+    label: homebrew.mxcl.unbound   # this is the default if omitted
+  kerberos_keep_alive:
+    label: com.example.kerberoskeepalive
+  omt:
+    label: org.example.omt-daemon
+  vpn:
+    label: com.example.vpn
+    interface: utun99              # optional: enables the tunnel-up check
+```
+
+Any daemon whose `label` is empty (the default for `kerberos_keep_alive`,
+`omt`, and `vpn`) is shown as "not configured" and cannot be controlled from
+the TUI.
+`macswitcher config validate` checks the `daemons:` block for unrecognized
+keys or fields (a common source of silent typos, since unknown YAML keys are
+otherwise just ignored).
+
+By default each daemon is assumed to be a per-user LaunchAgent, loaded in the
+`gui/<uid>` domain from `~/Library/LaunchAgents/<label>.plist`. Some daemons
+— notably a system-wide unbound install — instead run as a LaunchDaemon in
+the `system` domain from `/Library/LaunchDaemons/<label>.plist`. Set
+`scope: system` for those:
+
+```yaml
+daemons:
+  unbound:
+    label: net.unbound
+    scope: system
+```
+
+Inspecting a system-scoped daemon's status never needs elevated privileges,
+but starting, stopping, restarting, enabling, or disabling one does: those
+actions run `sudo launchctl ...` interactively, suspending the TUI and
+handing the real terminal to `sudo` so it can prompt for your password, then
+resuming once it exits.
+
+Keys: `↑`/`↓` or `j`/`k` to select a row, `s` start, `S` stop, `R` restart,
+`e` enable, `d` disable, `r` to refresh immediately, `q`/`Esc`/`Ctrl-C` to
+quit. Start/stop map to `launchctl bootstrap`/`bootout` (load state right
+now); enable/disable map to `launchctl enable`/`disable` (a persisted
+override independent of whether the agent is currently loaded, so a
+disabled agent stays off across reboots even with `RunAtLoad` set).
+
 
 ## Development
 

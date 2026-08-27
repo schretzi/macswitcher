@@ -44,6 +44,7 @@ func newRootCommand() *cobra.Command {
 		proxyCommand(),
 		configCommand(),
 		serviceCommand(),
+		observeCommand(),
 	)
 	return root
 }
@@ -198,6 +199,21 @@ func configCommand() *cobra.Command {
 		},
 	)
 	return command
+}
+
+func observeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "observe",
+		Short: "Open a TUI showing Alpaca, Unbound, KerberosKeepAlive, and omt status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := configuredPath()
+			if err != nil {
+				return err
+			}
+			return Observe(path)
+		},
+	}
 }
 
 func serviceCommand() *cobra.Command {
