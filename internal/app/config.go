@@ -36,7 +36,6 @@ type SwitchContext struct {
 	ProxyMode            string                `yaml:"proxy_mode" mapstructure:"proxy_mode"`
 	ForwarderProxy       *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
 	Alpaca               *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
-	Kerberos             KerberosConfig        `yaml:"kerberos" mapstructure:"kerberos"`
 	Apps                 AppLifecycleConfig    `yaml:"apps" mapstructure:"apps"`
 }
 
@@ -52,11 +51,6 @@ type ContextDNSConfig struct {
 type AlpacaConfig struct {
 	Enabled bool     `yaml:"enabled" mapstructure:"enabled"`
 	Command []string `yaml:"command" mapstructure:"command"`
-}
-
-type KerberosConfig struct {
-	TicketFile    string `yaml:"ticket_file" mapstructure:"ticket_file"`
-	UpstreamProxy string `yaml:"upstream_proxy" mapstructure:"upstream_proxy"`
 }
 
 type AppLifecycleConfig struct {
@@ -80,9 +74,10 @@ type UnboundConfig struct {
 type ForwarderProxyConfig struct {
 	ProxyServer             string   `yaml:"proxy_server" mapstructure:"proxy_server"`
 	Port                    int      `yaml:"port" mapstructure:"port"`
-	Username                string   `yaml:"username" mapstructure:"username"`
-	PasswordKeychainService string   `yaml:"password_keychain_service" mapstructure:"password_keychain_service"`
-	PasswordKeychainAccount string   `yaml:"password_keychain_account" mapstructure:"password_keychain_account"`
+	Username                string   `yaml:"username,omitempty" mapstructure:"username"`
+	PasswordKeychainService string   `yaml:"password_keychain_service,omitempty" mapstructure:"password_keychain_service"`
+	PasswordKeychainAccount string   `yaml:"password_keychain_account,omitempty" mapstructure:"password_keychain_account"`
+	TicketFile              string   `yaml:"ticket_file,omitempty" mapstructure:"ticket_file"`
 	PacFile                 string   `yaml:"pac_file" mapstructure:"pac_file"`
 	AuthAllowlist           []string `yaml:"auth_allowlist" mapstructure:"auth_allowlist"`
 }
@@ -91,7 +86,34 @@ const (
 	defaultConfigRelPath = ".config/macswitcher/config.yaml"
 	runtimeStateFile     = "state.json"
 	launchAgentLabel     = "com.macswitcher.proxy"
+
+	// ProxyModeOff removes all proxy configuration (shell, system settings, Docker, ...).
+	ProxyModeOff = "off"
+	// ProxyModeDirect points system settings at the local proxy, which then reaches the
+	// internet directly without an upstream forwarder.
+	ProxyModeDirect = "direct"
+	// ProxyModeForward points system settings at the local proxy, which then forwards
+	// requests to the upstream proxy defined in forwarder_proxy.
+	ProxyModeForward = "forward"
 )
+
+// validProxyModes lists the only accepted values for a context's proxy_mode.
+var validProxyModes = []string{ProxyModeOff, ProxyModeDirect, ProxyModeForward}
+
+// isValidProxyMode reports whether mode (case-insensitive) is one of off, direct, or forward.
+func isValidProxyMode(mode string) bool {
+	for _, valid := range validProxyModes {
+		if strings.EqualFold(mode, valid) {
+			return true
+		}
+	}
+	return false
+}
+
+// isForwardProxyMode reports whether mode (case-insensitive) is "forward".
+func isForwardProxyMode(mode string) bool {
+	return strings.EqualFold(mode, ProxyModeForward)
+}
 
 func configPath() (string, error) {
 	if custom := strings.TrimSpace(os.Getenv("MACSWITCHER_CONFIG")); custom != "" {

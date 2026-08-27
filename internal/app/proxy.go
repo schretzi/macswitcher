@@ -164,8 +164,8 @@ func runProxy(cfgPath string) error {
 		return errors.New("alpaca command is empty")
 	}
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- cmdArgs come from the operator-controlled config file (Alpaca command), not untrusted input
-	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && strings.TrimSpace(ctx.Kerberos.TicketFile) != "" {
-		ticketFile := strings.TrimSpace(ctx.Kerberos.TicketFile)
+	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) != "" {
+		ticketFile := strings.TrimSpace(ctx.ForwarderProxy.TicketFile)
 		if strings.HasPrefix(ticketFile, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
 				ticketFile = filepath.Join(home, strings.TrimPrefix(ticketFile, "~/"))
@@ -191,7 +191,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 		}
 	}
 	var forwarderProxy *ForwarderProxyConfig
-	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok {
+	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && isForwardProxyMode(ctx.ProxyMode) {
 		forwarderProxy = ctx.ForwarderProxy
 	}
 	forwarder := ForwarderProxyConfig{}
@@ -205,15 +205,20 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 		if err := validateForwarderProxy(forwarder); err != nil {
 			return nil, err
 		}
-		password, err = keychainPasswordGet(forwarder.PasswordKeychainService, forwarder.PasswordKeychainAccount)
-		if err != nil {
-			return nil, err
+		if strings.TrimSpace(forwarder.TicketFile) == "" {
+			password, err = keychainPasswordGet(forwarder.PasswordKeychainService, forwarder.PasswordKeychainAccount)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	cntlmConfPath := ""
 	if commandUsesToken(command, "{{cntlm_conf}}") {
 		if forwarderProxy == nil {
 			return nil, errors.New("{{cntlm_conf}} requires an active forwarder_proxy")
+		}
+		if strings.TrimSpace(forwarder.TicketFile) != "" {
+			return nil, errors.New("{{cntlm_conf}} requires a password-based forwarder_proxy, not ticket_file")
 		}
 		cntlmConfPath, err = generateCntlmConfig(cfg, password)
 		if err != nil {
@@ -225,17 +230,19 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 		if forwarderProxy == nil {
 			return nil, errors.New("{{upstream_url}} requires an active forwarder_proxy")
 		}
+		if strings.TrimSpace(forwarder.TicketFile) != "" {
+			return nil, errors.New("{{upstream_url}} requires a password-based forwarder_proxy, not ticket_file")
+		}
 		upstreamURL, err = buildForwarderUpstreamURL(forwarder, password)
 		if err != nil {
 			return nil, err
 		}
 	}
 	authAllowlist := strings.Join(forwarder.AuthAllowlist, ",")
-	ticketFile := ""
+	ticketFile := strings.TrimSpace(forwarder.TicketFile)
 	upstreamProxy := ""
-	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok {
-		ticketFile = ctx.Kerberos.TicketFile
-		upstreamProxy = ctx.Kerberos.UpstreamProxy
+	if strings.TrimSpace(forwarder.ProxyServer) != "" {
+		upstreamProxy = fmt.Sprintf("%s:%d", forwarder.ProxyServer, forwarder.Port)
 	}
 	replacements := map[string]string{
 		"{{local_host}}":     cfg.LocalProxy.Host,
@@ -344,6 +351,11 @@ func validateForwarderProxy(ep ForwarderProxyConfig) error {
 	if ep.Port <= 0 {
 		return errors.New("forwarder_proxy.port must be > 0")
 	}
+	// A Kerberos ticket_file and Keychain-backed username/password are alternative
+	// auth paths; ticket_file skips the Keychain requirements entirely.
+	if strings.TrimSpace(ep.TicketFile) != "" {
+		return nil
+	}
 	if strings.TrimSpace(ep.Username) == "" {
 		return errors.New("forwarder_proxy.username is required")
 	}
@@ -377,6 +389,12 @@ func keychainPasswordSet(cfgPath string) error {
 	proxy := *ctx.ForwarderProxy
 	if err := validateForwarderProxy(proxy); err != nil {
 		return err
+	}
+	if strings.TrimSpace(proxy.TicketFile) != "" {
+		return errors.New("active forwarder_proxy uses ticket_file (Kerberos); no Keychain password to set")
+	}
+	if strings.TrimSpace(proxy.PasswordKeychainService) == "" {
+		return errors.New("forwarder_proxy.password_keychain_service is required")
 	}
 	service := proxy.PasswordKeychainService
 	account := proxy.PasswordKeychainAccount

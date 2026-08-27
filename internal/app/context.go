@@ -42,7 +42,7 @@ func switchContext(cfgPath string, args []string) error {
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err
 	}
-	if strings.EqualFold(ctx.ProxyMode, "off") {
+	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) {
 		if err := unsetLocalProxy(cfgPath); err != nil {
 			return err
 		}
@@ -96,14 +96,22 @@ func configValidate(cfgPath string) error {
 			continue
 		}
 		if strings.TrimSpace(ctx.ProxyMode) == "" {
-			warnings = append(warnings, fmt.Sprintf("contexts.%s.proxy_mode is empty (recommended: direct|off)", name))
+			warnings = append(warnings, fmt.Sprintf("contexts.%s.proxy_mode is empty (recommended: off|direct|forward)", name))
+		} else if !isValidProxyMode(ctx.ProxyMode) {
+			critical = append(critical, fmt.Sprintf("contexts.%s.proxy_mode %q is invalid (must be off, direct, or forward)", name, ctx.ProxyMode))
+		}
+		if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy == nil {
+			critical = append(critical, fmt.Sprintf("contexts.%s.proxy_mode is forward but forwarder_proxy is not configured", name))
 		}
 		if ctx.ForwarderProxy != nil {
+			if !isForwardProxyMode(ctx.ProxyMode) {
+				warnings = append(warnings, fmt.Sprintf("contexts.%s.forwarder_proxy is configured but proxy_mode is %q; it is only used when proxy_mode is forward", name, ctx.ProxyMode))
+			}
 			proxy := *ctx.ForwarderProxy
 			if err := validateForwarderProxy(proxy); err != nil {
 				critical = append(critical, fmt.Sprintf("contexts.%s.forwarder_proxy: %v", name, err))
 			}
-			if strings.TrimSpace(proxy.PasswordKeychainAccount) == "" {
+			if strings.TrimSpace(proxy.TicketFile) == "" && strings.TrimSpace(proxy.PasswordKeychainAccount) == "" {
 				warnings = append(warnings, fmt.Sprintf("contexts.%s.forwarder_proxy.password_keychain_account is empty; runtime will fallback to username", name))
 			}
 			if len(proxy.AuthAllowlist) == 0 {
@@ -125,7 +133,7 @@ func configValidate(cfgPath string) error {
 	}
 
 	ctx := cfg.Contexts[cfg.CurrentContext]
-	if ctx.ForwarderProxy != nil {
+	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) == "" {
 		account := ctx.ForwarderProxy.PasswordKeychainAccount
 		if strings.TrimSpace(account) == "" {
 			account = ctx.ForwarderProxy.Username
@@ -215,7 +223,6 @@ func isEmptyContext(ctx SwitchContext) bool {
 		ctx.ProxyMode == "" &&
 		ctx.ForwarderProxy == nil &&
 		ctx.Alpaca == nil &&
-		ctx.Kerberos == (KerberosConfig{}) &&
 		len(ctx.Apps.Restart) == 0 &&
 		len(ctx.Apps.Stop) == 0 &&
 		len(ctx.Apps.Start) == 0 &&
