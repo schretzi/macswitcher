@@ -11,9 +11,9 @@
 //	log     ~/Library/Logs/<name>.log       (written by the process itself)
 //	stderr  ~/Library/Logs/<name>.err.log   (launchd; panics only)
 //
-// This file is duplicated verbatim in KerberosKeepAlive, OauthMailToken and
-// macswitcher. They are three separate modules with no shared dependency;
-// keep the copies in sync by hand.
+// This file is duplicated verbatim in KerberosKeepAlive, OauthMailToken,
+// macswitcher and tunneling. They are four separate modules with no shared
+// dependency; keep the copies in sync by hand.
 package service
 
 import (
@@ -366,21 +366,54 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// Stop unloads the job. Not being loaded is not an error.
+// bootoutTimeout bounds how long Stop waits for launchd to finish tearing a
+// job down, and bootoutPollInterval how often it looks.
+const (
+	bootoutTimeout      = 10 * time.Second
+	bootoutPollInterval = 100 * time.Millisecond
+)
+
+// Stop unloads the job and waits for launchd to finish. Not being loaded is
+// not an error.
 func (s *Service) Stop() error {
 	if !s.Loaded() {
 		return nil
 	}
 	out, err := launchctl("bootout", s.serviceTarget())
-	if err == nil {
+
+	// The wait is the fix, not a nicety. bootout returns once the unload has
+	// been *requested*, not once launchd has finished it, so bootstrapping
+	// immediately afterwards fails with the famously unhelpful "Bootstrap
+	// failed: 5: Input/output error". KeepAlive widens the window, because
+	// launchd keeps respawning the job while it is being torn down — which
+	// makes `service install` and `service restart` fail *intermittently*,
+	// mostly on the runs that changed the plist, i.e. exactly the runs that
+	// need to work.
+	//
+	// It also subsumes the old race check: a bootout that reported an error
+	// but did unload the job still counts as success.
+	if s.waitUnloaded() {
 		return nil
 	}
-	// bootout races with launchd tearing the job down; if it is gone by the
-	// time we look again, the unload succeeded.
-	if !s.Loaded() {
-		return nil
+	if err != nil {
+		return fmt.Errorf("launchctl bootout %s: %w: %s", s.Label(), err, out)
 	}
-	return fmt.Errorf("launchctl bootout %s: %w: %s", s.Label(), err, out)
+	return fmt.Errorf("launchctl bootout %s: still loaded after %s", s.Label(), bootoutTimeout)
+}
+
+// waitUnloaded polls until launchd no longer has the job registered, and
+// reports whether it went away within bootoutTimeout.
+func (s *Service) waitUnloaded() bool {
+	deadline := time.Now().Add(bootoutTimeout)
+	for {
+		if !s.Loaded() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(bootoutPollInterval)
+	}
 }
 
 // Restart stops and starts the job.
