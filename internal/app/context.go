@@ -39,6 +39,18 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 			return err
 		}
 		restartUnboundIfConfigured(cfg)
+		// The same forwarders, written again in AdGuard Home's syntax, while
+		// it is on trial next to unbound. Skipped entirely unless
+		// adguard.upstreams_file is set, and never fatal: unbound is still
+		// the resolver the machine points at, so a failure here must not
+		// abort a switch that otherwise succeeded.
+		if strings.TrimSpace(cfg.AdGuard.UpstreamsFile) != "" {
+			if err := writeAdGuardUpstreams(cfg, ctx.UnboundForwarders, selected); err != nil {
+				fmt.Printf("warning: could not write AdGuard Home upstreams: %v\n", err)
+			} else {
+				restartAdGuardIfConfigured(cfg)
+			}
+		}
 	}
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err

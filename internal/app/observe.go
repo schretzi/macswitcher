@@ -16,6 +16,7 @@ type daemonKind int
 const (
 	daemonKindAlpaca daemonKind = iota
 	daemonKindUnbound
+	daemonKindAdGuard
 	daemonKindKerberos
 	daemonKindOMT
 	daemonKindVPN
@@ -65,6 +66,10 @@ func newObserveModel(cfg Config) observeModel {
 		// elsewhere.
 		{name: appAlpaca, configKey: "", label: launchAgentService().Label(), scope: daemonScopeUser, kind: daemonKindAlpaca},
 		{name: appUnbound, configKey: appUnbound, label: cfg.Daemons.Unbound.Label, scope: cfg.Daemons.Unbound.Scope, kind: daemonKindUnbound},
+		// AdGuard Home sits directly under unbound: while it is on trial the
+		// two answer the same questions on different loopback addresses, and
+		// the point of the row is being able to see them side by side.
+		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons.AdGuardHome.Label, scope: cfg.Daemons.AdGuardHome.Scope, kind: daemonKindAdGuard},
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
 		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
@@ -120,6 +125,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return alpacaDetail(cfg)
 	case daemonKindUnbound:
 		return unboundDetail(cfg)
+	case daemonKindAdGuard:
+		return adguardDetail(cfg)
 	case daemonKindKerberos:
 		return kerberosDetail(cfg)
 	case daemonKindOMT:
@@ -167,6 +174,31 @@ func unboundDetail(cfg Config) []string {
 		return []string{"no forward-addr entries in " + cfg.Unbound.ForwardersFile}
 	}
 	return []string{"forwarders: " + strings.Join(forwarders, ", ")}
+}
+
+// adguardDetail shows what AdGuard Home is actually forwarding to, split into
+// the default upstreams macswitcher owns and the per-domain ones generated
+// from unbound's forward-zones - the distinction that matters when the
+// intranet stops resolving after a context switch.
+func adguardDetail(cfg Config) []string {
+	path := strings.TrimSpace(cfg.AdGuard.UpstreamsFile)
+	if path == "" {
+		return []string{"not configured (set adguard.upstreams_file to enable)"}
+	}
+	defaults, specific := currentAdGuardUpstreams(path)
+	if len(defaults) == 0 && len(specific) == 0 {
+		return []string{"no upstreams in " + path}
+	}
+	lines := []string{}
+	if len(defaults) > 0 {
+		lines = append(lines, "upstreams: "+strings.Join(defaults, ", "))
+	} else {
+		lines = append(lines, "no default upstreams - AdGuard Home cannot resolve anything")
+	}
+	if len(specific) > 0 {
+		lines = append(lines, fmt.Sprintf("per-domain: %d zone(s)", len(specific)))
+	}
+	return lines
 }
 
 func kerberosDetail(cfg Config) []string {

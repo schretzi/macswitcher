@@ -19,6 +19,7 @@ type Config struct {
 	NetworkServices []string                       `yaml:"network_services" mapstructure:"network_services"`
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
 	Unbound         UnboundConfig                  `yaml:"unbound" mapstructure:"unbound"`
+	AdGuard         AdGuardConfig                  `yaml:"adguard" mapstructure:"adguard"`
 	Daemons         DaemonsConfig                  `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
 	Contexts        map[string]SwitchContext       `yaml:"-" mapstructure:"-"`
@@ -72,6 +73,18 @@ type UnboundConfig struct {
 	ForwardersFile string `yaml:"forwarders_file" mapstructure:"forwarders_file"`
 }
 
+// AdGuardConfig points at AdGuard Home's upstream_dns_file, the equivalent of
+// unbound's forwarders.conf. Leave UpstreamsFile empty and macswitcher ignores
+// AdGuard Home entirely, which is what every machine that has not opted into
+// the trial wants.
+//
+// A context's UnboundForwarders drive both files: they are the same decision
+// ("which upstream resolvers does this network want"), just written in two
+// syntaxes.
+type AdGuardConfig struct {
+	UpstreamsFile string `yaml:"upstreams_file" mapstructure:"upstreams_file"`
+}
+
 // DaemonConfig identifies a launchd agent that `macswitcher observe` can show
 // and control alongside macswitcher's own Alpaca agent. It is not installed
 // by macswitcher itself: its plist is expected to already exist at the
@@ -97,6 +110,7 @@ type DaemonConfig struct {
 // beyond macswitcher's own Alpaca launch agent (always shown).
 type DaemonsConfig struct {
 	Unbound           DaemonConfig `yaml:"unbound" mapstructure:"unbound"`
+	AdGuardHome       DaemonConfig `yaml:"adguardhome" mapstructure:"adguardhome"`
 	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
 	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
 	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
@@ -128,6 +142,10 @@ const (
 const (
 	appAlpaca  = "alpaca"
 	appUnbound = "unbound"
+	// appAdGuard is AdGuard Home, on trial as unbound's replacement. Both can
+	// run at once (unbound on 127.0.0.2, AdGuard Home on 127.0.0.3), so a
+	// context switch feeds whichever of them is configured.
+	appAdGuard = "adguardhome"
 )
 
 // Loopback addresses. mDNSResponder owns 127.0.0.1:53, so unbound listens on
@@ -135,6 +153,9 @@ const (
 const (
 	loopbackLocal    = "127.0.0.1"
 	loopbackResolver = "127.0.0.2"
+	// loopbackAdGuard is where AdGuard Home listens while it is being
+	// evaluated next to unbound. Point dns.local_resolver here to try it.
+	loopbackAdGuard = "127.0.0.3"
 )
 
 // contextHome is the context `config init` seeds and falls back to.
@@ -236,6 +257,9 @@ func initConfig(path string) error {
 		Unbound: UnboundConfig{
 			ForwardersFile: "/opt/homebrew/etc/unbound/conf.d/forwarders.conf",
 		},
+		// Empty on purpose: AdGuard Home is opt-in while it is on trial. Set
+		// upstreams_file (and daemons.adguardhome.label) to bring it in.
+		AdGuard: AdGuardConfig{},
 		Applications: map[string]ApplicationCommands{
 			appUnbound: {
 				Reload:  []string{"unbound-control", actionReload},
@@ -308,6 +332,29 @@ func currentNetworkServices() []string {
 	}
 
 	return services
+}
+
+// currentAdGuardUpstreams reads back AdGuard Home's upstream_dns_file, split
+// into the plain default upstreams and the domain-specific "[/zone/]addr"
+// entries. AdGuard Home treats a line as a comment only when it starts with
+// '#', so that is the only comment form to skip.
+func currentAdGuardUpstreams(path string) (defaults, specific []string) {
+	b, err := os.ReadFile(path) // #nosec G304 -- path is the configured AdGuard Home upstreams file, an operator-controlled setting
+	if err != nil {
+		return nil, nil
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			specific = append(specific, line)
+			continue
+		}
+		defaults = append(defaults, line)
+	}
+	return defaults, specific
 }
 
 func currentUnboundForwarders(path string) []string {
