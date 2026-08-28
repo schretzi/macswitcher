@@ -17,6 +17,7 @@ const (
 	daemonKindAlpaca daemonKind = iota
 	daemonKindUnbound
 	daemonKindAdGuard
+	daemonKindContainer
 	daemonKindKerberos
 	daemonKindOMT
 	daemonKindVPN
@@ -70,6 +71,9 @@ func newObserveModel(cfg Config) observeModel {
 		// two answer the same questions on different loopback addresses, and
 		// the point of the row is being able to see them side by side.
 		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons.AdGuardHome.Label, scope: cfg.Daemons.AdGuardHome.Scope, kind: daemonKindAdGuard},
+		// apple/container + kiac: the cluster VMs take their DNS from the vmnet
+		// gateway, so this belongs next to the resolvers rather than at the end.
+		{name: appContainer, configKey: appContainer, label: cfg.Daemons.Container.Label, scope: cfg.Daemons.Container.Scope, kind: daemonKindContainer},
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
 		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
@@ -127,6 +131,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return unboundDetail(cfg)
 	case daemonKindAdGuard:
 		return adguardDetail(cfg)
+	case daemonKindContainer:
+		return containerRuntimeDetail()
 	case daemonKindKerberos:
 		return kerberosDetail(cfg)
 	case daemonKindOMT:
@@ -185,7 +191,10 @@ func adguardDetail(cfg Config) []string {
 	if path == "" {
 		return []string{"not configured (set adguard.upstreams_file to enable)"}
 	}
-	defaults, specific := currentAdGuardUpstreams(path)
+	defaults, specific, err := currentAdGuardUpstreams(path)
+	if err != nil {
+		return []string{"cannot read " + path + ": " + firstLine(err.Error())}
+	}
 	if len(defaults) == 0 && len(specific) == 0 {
 		return []string{"no upstreams in " + path}
 	}

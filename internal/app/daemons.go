@@ -99,6 +99,12 @@ func inspectDaemon(label, scope string) daemonStatus {
 		return status
 	}
 	status.Loaded = true
+	// Being known to launchd counts as installed, even when no plist was found
+	// at the conventional path above: apple/container submits its jobs
+	// programmatically, so com.apple.container.apiserver is running with no
+	// file in ~/Library/LaunchAgents at all. Without this it would be reported
+	// as "not installed" while visibly running.
+	status.Installed = true
 	status.Running = strings.Contains(out, "state = running")
 	if m := pidPattern.FindStringSubmatch(out); m != nil {
 		status.PID, _ = strconv.Atoi(m[1])
@@ -365,6 +371,58 @@ func parseTunnelingStatus(out string) (summary string, lines []string) {
 	return summary, []string{"closed: " + strings.Join(shown, ", ") + suffix}
 }
 
+// containerRuntimeDetail reports what apple/container and kiac are doing.
+//
+// The launchd row above only says whether the apiserver process exists. What
+// actually matters is one level up: whether the runtime answers at all, how
+// many kiac cluster nodes are up, and whether the vmnet gateway exists - the
+// last one because 192.168.64.1 is where the node VMs send their DNS, so its
+// absence explains cluster-wide resolution failures that look like DNS bugs.
+func containerRuntimeDetail() []string {
+	out, err := runCommandOutput("container", "system", "status")
+	if err != nil {
+		return []string{"container runtime not responding - run `container system start`"}
+	}
+	if !strings.Contains(out, "running") {
+		return []string{"container apiserver is not running - run `container system start`"}
+	}
+
+	lines := []string{"apiserver running"}
+
+	clusters, err := runCommandOutput("kiac", "get", "clusters")
+	if err != nil {
+		lines = append(lines, "kiac could not list clusters: "+firstLine(err.Error()))
+		return lines
+	}
+	var summary []string
+	for _, line := range strings.Split(clusters, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.EqualFold(fields[0], "NAME") {
+			continue
+		}
+		summary = append(summary, fields[0]+" "+strings.Join(fields[1:], " "))
+	}
+	if len(summary) == 0 {
+		lines = append(lines, "no kiac clusters")
+	} else {
+		lines = append(lines, "clusters: "+strings.Join(summary, ", "))
+	}
+
+	if gw, err := runCommandOutput("ifconfig"); err == nil && strings.Contains(gw, "inet 192.168.64.1 ") {
+		lines = append(lines, "vmnet gateway 192.168.64.1 up (node VMs can reach the resolver)")
+	} else {
+		lines = append(lines, "vmnet gateway 192.168.64.1 down - node VMs have no resolver")
+	}
+	return lines
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 var vpnInetPattern = regexp.MustCompile(`(?m)^\s*inet (\S+)`)
 
 // vpnInterfaceStatus reports whether iface (e.g. "utun99") currently exists
@@ -386,6 +444,7 @@ var (
 	knownDaemonKeys = map[string]bool{
 		appUnbound:            true,
 		appAdGuard:            true,
+		appContainer:          true,
 		"kerberos_keep_alive": true,
 		"omt":                 true,
 		"vpn":                 true,

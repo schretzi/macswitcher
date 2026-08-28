@@ -111,6 +111,7 @@ type DaemonConfig struct {
 type DaemonsConfig struct {
 	Unbound           DaemonConfig `yaml:"unbound" mapstructure:"unbound"`
 	AdGuardHome       DaemonConfig `yaml:"adguardhome" mapstructure:"adguardhome"`
+	Container         DaemonConfig `yaml:"container" mapstructure:"container"`
 	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
 	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
 	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
@@ -146,6 +147,10 @@ const (
 	// run at once (unbound on 127.0.0.2, AdGuard Home on 127.0.0.3), so a
 	// context switch feeds whichever of them is configured.
 	appAdGuard = "adguardhome"
+	// appContainer is Apple's container runtime, which kiac builds its cluster
+	// node VMs on. Watched rather than driven: macswitcher never starts or
+	// stops it, but a context switch is a common moment for it to be down.
+	appContainer = "container"
 )
 
 // Loopback addresses. mDNSResponder owns 127.0.0.1:53, so unbound listens on
@@ -338,10 +343,14 @@ func currentNetworkServices() []string {
 // into the plain default upstreams and the domain-specific "[/zone/]addr"
 // entries. AdGuard Home treats a line as a comment only when it starts with
 // '#', so that is the only comment form to skip.
-func currentAdGuardUpstreams(path string) (defaults, specific []string) {
+func currentAdGuardUpstreams(path string) (defaults, specific []string, err error) {
 	b, err := os.ReadFile(path) // #nosec G304 -- path is the configured AdGuard Home upstreams file, an operator-controlled setting
 	if err != nil {
-		return nil, nil
+		// Distinguished from "the file is empty" on purpose: AdGuard Home
+		// forces its own work directory to 0700, so a file placed there is
+		// unreadable to this process and would otherwise be reported as
+		// "no upstreams" for ever - a wrong answer that looks like a real one.
+		return nil, nil, err
 	}
 	for line := range strings.SplitSeq(string(b), "\n") {
 		line = strings.TrimSpace(line)
@@ -354,7 +363,7 @@ func currentAdGuardUpstreams(path string) (defaults, specific []string) {
 		}
 		defaults = append(defaults, line)
 	}
-	return defaults, specific
+	return defaults, specific, nil
 }
 
 func currentUnboundForwarders(path string) []string {

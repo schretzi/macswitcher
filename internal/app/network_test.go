@@ -87,7 +87,10 @@ func TestWriteAdGuardUpstreamsPreservesPerDomainEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	defaults, specific := currentAdGuardUpstreams(path)
+	defaults, specific, err := currentAdGuardUpstreams(path)
+	if err != nil {
+		t.Fatalf("currentAdGuardUpstreams() error = %v", err)
+	}
 
 	if want := []string{"10.0.0.149", "10.0.0.70"}; !slices.Equal(defaults, want) {
 		t.Errorf("defaults = %v, want %v", defaults, want)
