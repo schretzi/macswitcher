@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -269,6 +270,101 @@ func omtInstalled() bool {
 	return err == nil
 }
 
+func tunnelingInstalled() bool {
+	_, err := exec.LookPath("tunneling")
+	return err == nil
+}
+
+// maxClosedTunnelsShown caps how many closed tunnels are listed by name.
+// observe renders every row's detail lines at once, not just the selected
+// row's, so an unbounded list here would push the other daemons and the key
+// bindings off the screen — which is the opposite of what a status TUI is
+// for. Beyond the cap it says how many more there are.
+const maxClosedTunnelsShown = 6
+
+// tunnelingTunnelStatus summarizes `tunneling status`: how many configured
+// tunnels are actually listening, and the names of any that are not.
+//
+// Only the *closed* ones are named. A healthy config here is a dozen-plus
+// tunnels, and listing them all every refresh would drown the other rows;
+// "13/13 tunnels open" is the whole signal when nothing is wrong.
+//
+// It cannot use runCommandOutput. `tunneling status` deliberately exits
+// non-zero when any tunnel's local port is closed, and runCommandOutput
+// throws the output away on a non-zero exit — which would blank the row in
+// precisely the situation this is here to show.
+func tunnelingTunnelStatus() (summary string, lines []string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	// #nosec G204 -- fixed binary name resolved from PATH, no arguments
+	// derived from user input.
+	cmd := exec.CommandContext(ctx, "tunneling", "status")
+	// Not CombinedOutput: on the non-zero exit that closed tunnels produce,
+	// tunneling also writes "error: N of M tunnel(s) are not listening" to
+	// stderr, and merging that into stdout makes it parse as one more table
+	// row — inflating the tunnel count and listing "error:" as a tunnel name.
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, runErr := cmd.Output()
+	out := strings.TrimRight(string(stdout), "\n")
+
+	if ctx.Err() != nil {
+		return "", nil, fmt.Errorf("tunneling status timed out after %s: %w", commandTimeout, ctx.Err())
+	}
+	// A non-zero exit *with* a table is the "some tunnels are down" case,
+	// which is exactly what this reports. A non-zero exit with no table is a
+	// real failure — a missing or unparsable config, say.
+	if runErr != nil && strings.TrimSpace(out) == "" {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return "", nil, errors.New(detail)
+		}
+		return "", nil, fmt.Errorf("tunneling status: %w", runErr)
+	}
+
+	summary, lines = parseTunnelingStatus(out)
+	return summary, lines, nil
+}
+
+// parseTunnelingStatus turns the `tunneling status` table into a one-line
+// summary plus, when something is wrong, the names of the closed tunnels.
+// Split out from tunnelingTunnelStatus so the parsing is testable without a
+// tunneling binary on PATH.
+func parseTunnelingStatus(out string) (summary string, lines []string) {
+	rows := strings.Split(out, "\n")
+	if len(rows) < 2 {
+		return "no tunnels configured", nil
+	}
+	total, open := 0, 0
+	var closed []string
+	for _, row := range rows[1:] { // skip the header row
+		fields := strings.Fields(row)
+		if len(fields) == 0 {
+			continue
+		}
+		total++
+		if slices.Contains(fields, "OPEN") {
+			open++
+			continue
+		}
+		closed = append(closed, fields[0]) // the NAME column
+	}
+	if total == 0 {
+		return "no tunnels configured", nil
+	}
+
+	summary = fmt.Sprintf("%d/%d tunnels open", open, total)
+	if len(closed) == 0 {
+		return summary, nil
+	}
+	shown, suffix := closed, ""
+	if len(shown) > maxClosedTunnelsShown {
+		shown = shown[:maxClosedTunnelsShown]
+		suffix = fmt.Sprintf(" (+%d more)", len(closed)-maxClosedTunnelsShown)
+	}
+	return summary, []string{"closed: " + strings.Join(shown, ", ") + suffix}
+}
+
 var vpnInetPattern = regexp.MustCompile(`(?m)^\s*inet (\S+)`)
 
 // vpnInterfaceStatus reports whether iface (e.g. "utun99") currently exists
@@ -287,9 +383,28 @@ func vpnInterfaceStatus(iface string) (up bool, detail string) {
 }
 
 var (
-	knownDaemonKeys   = map[string]bool{appUnbound: true, "kerberos_keep_alive": true, "omt": true, "vpn": true}
+	knownDaemonKeys = map[string]bool{
+		appUnbound:            true,
+		"kerberos_keep_alive": true,
+		"omt":                 true,
+		"vpn":                 true,
+		"tunneling":           true,
+	}
 	knownDaemonFields = map[string]bool{"label": true, "scope": true, "interface": true}
 )
+
+// knownDaemonKeyList is the sorted key set, for error messages. Derived from
+// knownDaemonKeys rather than written out again: the hand-maintained copy in
+// the "not a recognized daemon" warning had already drifted, telling people
+// vpn was invalid when it was not.
+func knownDaemonKeyList() string {
+	keys := make([]string, 0, len(knownDaemonKeys))
+	for k := range knownDaemonKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
 
 // daemonsConfigWarnings re-reads path's raw YAML looking for typos under the
 // top-level daemons: block (e.g. an unrecognized daemon name, or a field
@@ -316,8 +431,8 @@ func daemonsConfigWarnings(path string) ([]string, error) {
 	for key, val := range daemonsMap {
 		if !knownDaemonKeys[key] {
 			warnings = append(warnings, fmt.Sprintf(
-				"daemons.%s is not a recognized daemon (expected one of unbound, kerberos_keep_alive, omt); it will be ignored",
-				key,
+				"daemons.%s is not a recognized daemon (expected one of %s); it will be ignored",
+				key, knownDaemonKeyList(),
 			))
 			continue
 		}

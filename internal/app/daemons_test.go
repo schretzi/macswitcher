@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -207,6 +208,8 @@ daemons:
   vpn:
     label: com.schretzi.corp-vpn
     interface: utun99
+  tunneling:
+    label: com.schretzi.tunneling
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
@@ -217,6 +220,46 @@ daemons:
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for a valid daemons: block, got: %v", warnings)
+	}
+}
+
+// The warning used to hand-list the valid keys and had drifted out of step
+// with knownDaemonKeys, telling people vpn was invalid when it was not.
+func TestDaemonsConfigWarningListsEveryKnownKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("daemons:\n  nosuchdaemon:\n    label: x\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+	warnings, err := daemonsConfigWarnings(path)
+	if err != nil {
+		t.Fatalf("daemonsConfigWarnings() error = %v", err)
+	}
+	joined := strings.Join(warnings, "\n")
+	for key := range knownDaemonKeys {
+		if !strings.Contains(joined, key) {
+			t.Errorf("warning does not mention the valid key %q: %v", key, warnings)
+		}
+	}
+}
+
+// Every daemon key that config accepts must also produce a row in observe -
+// otherwise it validates cleanly and then silently does nothing, which is
+// what daemons.tunneling did before it was wired up.
+func TestObserveHasARowForEveryKnownDaemonKey(t *testing.T) {
+	t.Parallel()
+
+	rows := newObserveModel(Config{}).rows
+	haveRow := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		haveRow[r.configKey] = true
+	}
+	for key := range knownDaemonKeys {
+		if !haveRow[key] {
+			t.Errorf("daemons.%s is a recognized config key but observe has no row for it", key)
+		}
 	}
 }
 
@@ -258,5 +301,80 @@ func TestVPNInetPattern(t *testing.T) {
 	m := vpnInetPattern.FindStringSubmatch(sample)
 	if m == nil || m[1] != "10.1.2.3" {
 		t.Fatalf("vpnInetPattern match = %#v, want inet 10.1.2.3", m)
+	}
+}
+
+func TestParseTunnelingStatus(t *testing.T) {
+	t.Parallel()
+
+	const header = "NAME  KIND  LOCAL            STATE  DESTINATION      VIA\n"
+
+	tests := []struct {
+		name        string
+		out         string
+		wantSummary string
+		wantLines   []string
+	}{
+		{
+			name:        "empty output",
+			out:         "",
+			wantSummary: "no tunnels configured",
+		},
+		{
+			name:        "header only",
+			out:         strings.TrimRight(header, "\n"),
+			wantSummary: "no tunnels configured",
+		},
+		{
+			name: "all open lists nothing",
+			out: header +
+				"jump-dev  gcp  127.0.0.1:10022  OPEN  host:22   iap p/z\n" +
+				"k8s-dev   ssh  127.0.0.1:10443  OPEN  10.0.0.1:443  me@localhost:10022",
+			wantSummary: "2/2 tunnels open",
+		},
+		{
+			name: "closed tunnels are named",
+			out: header +
+				"jump-dev  gcp  127.0.0.1:10022  OPEN    host:22       iap p/z\n" +
+				"k8s-dev   ssh  127.0.0.1:10443  CLOSED  10.0.0.1:443  me@localhost:10022",
+			wantSummary: "1/2 tunnels open",
+			wantLines:   []string{"closed: k8s-dev"},
+		},
+		{
+			// A tunnel named "OPEN..." must not be miscounted, and the
+			// STATE column is matched as a whole field, not a substring.
+			name: "state is matched as a whole field",
+			out: header +
+				"reopened  ssh  127.0.0.1:1  CLOSED  h:1  v",
+			wantSummary: "0/1 tunnels open",
+			wantLines:   []string{"closed: reopened"},
+		},
+		{
+			name: "long closed list is capped",
+			out: header +
+				"a  ssh  127.0.0.1:1  CLOSED  h:1  v\n" +
+				"b  ssh  127.0.0.1:2  CLOSED  h:1  v\n" +
+				"c  ssh  127.0.0.1:3  CLOSED  h:1  v\n" +
+				"d  ssh  127.0.0.1:4  CLOSED  h:1  v\n" +
+				"e  ssh  127.0.0.1:5  CLOSED  h:1  v\n" +
+				"f  ssh  127.0.0.1:6  CLOSED  h:1  v\n" +
+				"g  ssh  127.0.0.1:7  CLOSED  h:1  v\n" +
+				"h  ssh  127.0.0.1:8  CLOSED  h:1  v",
+			wantSummary: "0/8 tunnels open",
+			wantLines:   []string{"closed: a, b, c, d, e, f (+2 more)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			summary, lines := parseTunnelingStatus(tt.out)
+			if summary != tt.wantSummary {
+				t.Errorf("summary = %q, want %q", summary, tt.wantSummary)
+			}
+			if !slices.Equal(lines, tt.wantLines) {
+				t.Errorf("lines = %v, want %v", lines, tt.wantLines)
+			}
+		})
 	}
 }

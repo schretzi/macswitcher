@@ -100,6 +100,7 @@ type DaemonsConfig struct {
 	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
 	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
 	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
+	Tunneling         DaemonConfig `yaml:"tunneling" mapstructure:"tunneling"`
 }
 
 type ForwarderProxyConfig struct {

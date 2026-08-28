@@ -245,8 +245,13 @@ status of every daemon macswitcher cares about, refreshed automatically every
   `daemons.vpn.interface` is set, whether that tunnel interface currently
   has an address (a running supervisor process doesn't guarantee the
   tunnel actually came up).
+- **tunneling** — shown only if the `tunneling` binary is on `PATH`; runs
+  `tunneling status` and summarizes how many of the configured SSH/GCP-IAP
+  tunnels have an open local port. Listed last because its tunnels ride on
+  whatever the rows above set up, so a failure here is usually a symptom of
+  one of them.
 
-unbound, KerberosKeepAlive, omt, and vpn are not installed by macswitcher
+unbound, KerberosKeepAlive, omt, vpn, and tunneling are not installed by macswitcher
 (they come from Homebrew or an external Ansible role/script), so their
 launchd labels must be configured explicitly:
 
@@ -261,11 +266,13 @@ daemons:
   vpn:
     label: com.example.vpn
     interface: utun99              # optional: enables the tunnel-up check
+  tunneling:
+    label: com.schretzi.tunneling
 ```
 
 Any daemon whose `label` is empty (the default for `kerberos_keep_alive`,
-`omt`, and `vpn`) is shown as "not configured" and cannot be controlled from
-the TUI.
+`omt`, `vpn`, and `tunneling`) is shown as "not configured" and cannot be
+controlled from the TUI.
 `macswitcher config validate` checks the `daemons:` block for unrecognized
 keys or fields (a common source of silent typos, since unknown YAML keys are
 otherwise just ignored).

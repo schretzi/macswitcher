@@ -19,6 +19,7 @@ const (
 	daemonKindKerberos
 	daemonKindOMT
 	daemonKindVPN
+	daemonKindTunneling
 )
 
 // daemonRow is one line of the observe TUI: a launchd agent plus the
@@ -67,6 +68,10 @@ func newObserveModel(cfg Config) observeModel {
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
 		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
+		// last: its gcp tunnels ride on whatever the rows above have set up
+		// (proxy, resolver, VPN), so a failure here is usually a symptom of
+		// one of them.
+		{name: "tunneling", configKey: "tunneling", label: cfg.Daemons.Tunneling.Label, scope: cfg.Daemons.Tunneling.Scope, kind: daemonKindTunneling},
 	}
 	return observeModel{cfg: cfg, rows: rows}
 }
@@ -107,8 +112,8 @@ func refreshRowCmd(cfg Config, index int, row daemonRow) tea.Cmd {
 
 // gatherExtra collects the daemon-specific detail lines shown under a row:
 // alpaca's active proxy wiring, unbound's forwarders, the active context's
-// Kerberos ticket validity, omt's OAuth2 token status, or the VPN tunnel
-// interface's connectivity.
+// Kerberos ticket validity, omt's OAuth2 token status, the VPN tunnel
+// interface's connectivity, or how many of tunneling's local ports are open.
 func gatherExtra(cfg Config, row daemonRow) []string {
 	switch row.kind {
 	case daemonKindAlpaca:
@@ -121,6 +126,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return omtDetail()
 	case daemonKindVPN:
 		return vpnDetail(cfg)
+	case daemonKindTunneling:
+		return tunnelingDetail()
 	default:
 		return nil
 	}
@@ -183,6 +190,19 @@ func omtDetail() []string {
 	summary, lines, err := omtAccountStatus()
 	if err != nil {
 		return []string{fmt.Sprintf("omt status failed: %v", err)}
+	}
+	out := []string{summary}
+	out = append(out, lines...)
+	return out
+}
+
+func tunnelingDetail() []string {
+	if !tunnelingInstalled() {
+		return []string{"tunneling binary not found on PATH"}
+	}
+	summary, lines, err := tunnelingTunnelStatus()
+	if err != nil {
+		return []string{fmt.Sprintf("tunneling status failed: %v", err)}
 	}
 	out := []string{summary}
 	out = append(out, lines...)
