@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -40,10 +39,13 @@ var ErrClosed = errors.New("logfile: writer is closed")
 type Writer struct {
 	path string
 
-	mu        sync.Mutex
-	file      *os.File
-	dev       int32
-	ino       uint64
+	mu   sync.Mutex
+	file *os.File
+	// info identifies the file we currently hold open, for comparison against
+	// whatever is at path later. os.FileInfo rather than a (dev, ino) pair:
+	// syscall.Stat_t.Dev is int32 on darwin and uint64 on Linux, so reading
+	// those fields directly does not compile on both.
+	info      os.FileInfo
 	lastCheck time.Time
 }
 
@@ -104,9 +106,9 @@ func (w *Writer) openLocked() error {
 	}
 	w.file = f
 
-	w.dev, w.ino = 0, 0
+	w.info = nil
 	if fi, statErr := f.Stat(); statErr == nil {
-		w.dev, w.ino = fileID(fi)
+		w.info = fi
 	}
 	w.lastCheck = time.Now()
 	return nil
@@ -129,17 +131,7 @@ func (w *Writer) reopenIfRotatedLocked() {
 		}
 		return
 	}
-	if dev, ino := fileID(fi); dev != w.dev || ino != w.ino {
+	if w.info == nil || !os.SameFile(fi, w.info) {
 		_ = w.openLocked()
 	}
-}
-
-// fileID returns the (device, inode) pair identifying fi, or zeroes if the
-// platform does not expose it. Two files are the same file iff both match.
-func fileID(fi os.FileInfo) (int32, uint64) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, 0
-	}
-	return st.Dev, st.Ino
 }
