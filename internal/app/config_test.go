@@ -26,22 +26,22 @@ func TestInitConfigCreatesGlobalAndContextFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig() error = %v", err)
 	}
-	if got := cfg.DNS.LocalResolver; got != "127.0.0.2" {
-		t.Fatalf("default resolver = %q, want %q", got, "127.0.0.2")
+	if got := cfg.DNS.LocalResolver; got != loopbackResolver {
+		t.Fatalf("default resolver = %q, want %q", got, loopbackResolver)
 	}
-	if got := cfg.Contexts["home"].DNS.Resolvers; len(got) != 1 || got[0] != "127.0.0.2" {
+	if got := cfg.Contexts[contextHome].DNS.Resolvers; len(got) != 1 || got[0] != loopbackResolver {
 		t.Fatalf("home resolvers = %#v, want [127.0.0.2]", got)
 	}
 	if len(cfg.Alpaca.Command) == 0 {
 		t.Fatal("global Alpaca command is empty")
 	}
-	if got := cfg.Applications["unbound"].Reload; len(got) != 2 || got[0] != "unbound-control" || got[1] != "reload" {
+	if got := cfg.Applications[appUnbound].Reload; len(got) != 2 || got[0] != "unbound-control" || got[1] != actionReload {
 		t.Fatalf("unbound reload command = %#v, want unbound-control reload", got)
 	}
-	if got := cfg.Applications["unbound"].Restart; strings.Join(got, " ") != "sudo launchctl kickstart -k system/net.unbound" {
+	if got := cfg.Applications[appUnbound].Restart; strings.Join(got, " ") != "sudo launchctl kickstart -k system/net.unbound" {
 		t.Fatalf("unbound restart command = %#v, want LaunchDaemon kickstart", got)
 	}
-	if got := cfg.Contexts["home"].Apps.Reload; len(got) != 1 || got[0] != "unbound" {
+	if got := cfg.Contexts[contextHome].Apps.Reload; len(got) != 1 || got[0] != appUnbound {
 		t.Fatalf("home reload applications = %#v, want [unbound]", got)
 	}
 	if got := strings.Join(cfg.LocalProxy.NoProxy, ","); !strings.Contains(got, "kubernetes") {
@@ -65,21 +65,21 @@ func TestBuildProxyCommandWithoutForwarderUsesDirectCommand(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		CurrentContext: "home",
-		LocalProxy:     LocalProxyConfig{Host: "127.0.0.1", Port: 3128},
+		CurrentContext: contextHome,
+		LocalProxy:     LocalProxyConfig{Host: loopbackLocal, Port: 3128},
 		Contexts: map[string]SwitchContext{
-			"home": {ProxyMode: "direct"},
+			contextHome: {ProxyMode: "direct"},
 		},
 	}
 
 	args, err := buildProxyCommand(cfg, AlpacaConfig{
 		Enabled: true,
-		Command: []string{"alpaca", "-l", "{{local_host}}", "-p", "{{local_port}}", "-C", "{{pac_file}}"},
+		Command: []string{appAlpaca, "-l", placeholderLocalHost, "-p", placeholderLocalPort, "-C", placeholderPACFile},
 	})
 	if err != nil {
 		t.Fatalf("buildProxyCommand() error = %v", err)
 	}
-	want := []string{"alpaca", "-l", "127.0.0.1", "-p", "3128"}
+	want := []string{appAlpaca, "-l", loopbackLocal, "-p", "3128"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("buildProxyCommand() = %#v, want %#v", args, want)
 	}
@@ -89,15 +89,15 @@ func TestBuildProxyCommandUsesInstalledAlpacaPath(t *testing.T) {
 	t.Setenv("MACSWITCHER_ALPACA_BINARY", "/opt/homebrew/bin/alpaca")
 
 	cfg := Config{
-		CurrentContext: "home",
-		LocalProxy:     LocalProxyConfig{Host: "127.0.0.1", Port: 3128},
+		CurrentContext: contextHome,
+		LocalProxy:     LocalProxyConfig{Host: loopbackLocal, Port: 3128},
 		Contexts: map[string]SwitchContext{
-			"home": {ProxyMode: "direct"},
+			contextHome: {ProxyMode: "direct"},
 		},
 	}
 	args, err := buildProxyCommand(cfg, AlpacaConfig{
 		Enabled: true,
-		Command: []string{"alpaca", "-p", "{{local_port}}"},
+		Command: []string{appAlpaca, "-p", placeholderLocalPort},
 	})
 	if err != nil {
 		t.Fatalf("buildProxyCommand() error = %v", err)
@@ -160,8 +160,8 @@ func TestRunApplicationActionFallsBackToStopAndStart(t *testing.T) {
 		name   string
 		action string
 	}{
-		{name: "restart", action: "restart"},
-		{name: "reload", action: "reload"},
+		{name: actionRestart, action: actionRestart},
+		{name: actionReload, action: actionReload},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

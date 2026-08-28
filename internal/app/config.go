@@ -37,7 +37,7 @@ type SwitchContext struct {
 	ProxyMode            string                `yaml:"proxy_mode" mapstructure:"proxy_mode"`
 	ForwarderProxy       *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
 	Alpaca               *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
-	Apps                 AppLifecycleConfig    `yaml:"apps" mapstructure:"apps"`
+	Apps                 LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
 }
 
 type DNSConfig struct {
@@ -54,7 +54,7 @@ type AlpacaConfig struct {
 	Command []string `yaml:"command" mapstructure:"command"`
 }
 
-type AppLifecycleConfig struct {
+type LifecycleConfig struct {
 	Restart []string `yaml:"restart" mapstructure:"restart"`
 	Stop    []string `yaml:"stop" mapstructure:"stop"`
 	Start   []string `yaml:"start" mapstructure:"start"`
@@ -113,10 +113,42 @@ type ForwarderProxyConfig struct {
 	AuthAllowlist           []string `yaml:"auth_allowlist" mapstructure:"auth_allowlist"`
 }
 
+// Action names, as they appear in a context's `apps:` lists and in the
+// `applications:` command map.
+const (
+	actionStart   = "start"
+	actionStop    = "stop"
+	actionRestart = "restart"
+	actionReload  = "reload"
+)
+
+// Names of the managed applications macswitcher knows about by name, as used
+// as keys in the `applications:` map.
+const (
+	appAlpaca  = "alpaca"
+	appUnbound = "unbound"
+)
+
+// Loopback addresses. mDNSResponder owns 127.0.0.1:53, so unbound listens on
+// 127.0.0.2 instead - see the unbound notes in MacbookSetup/Setup.md.
+const (
+	loopbackLocal    = "127.0.0.1"
+	loopbackResolver = "127.0.0.2"
+)
+
+// contextHome is the context `config init` seeds and falls back to.
+const contextHome = "home"
+
+// Placeholders substituted into a context's alpaca command line.
+const (
+	placeholderLocalHost = "{{local_host}}"
+	placeholderLocalPort = "{{local_port}}"
+	placeholderPACFile   = "{{pac_file}}"
+)
+
 const (
 	defaultConfigRelPath = ".config/macswitcher/config.yaml"
 	runtimeStateFile     = "state.json"
-	launchAgentLabel     = "com.macswitcher.proxy"
 
 	// ProxyModeOff removes all proxy configuration (shell, system settings, Docker, ...).
 	ProxyModeOff = "off"
@@ -174,38 +206,38 @@ func initConfig(path string) error {
 		return err
 	}
 	cfg := Config{
-		CurrentContext: "home",
+		CurrentContext: contextHome,
 		LocalProxy: LocalProxyConfig{
-			Host:    "127.0.0.1",
+			Host:    loopbackLocal,
 			Port:    3128,
-			NoProxy: []string{"localhost", "127.0.0.1", "::1", "kubernetes"},
+			NoProxy: []string{"localhost", loopbackLocal, "::1", "kubernetes"},
 		},
 		Alpaca: AlpacaConfig{
 			Enabled: true,
-			Command: []string{"alpaca", "-l", "{{local_host}}", "-p", "{{local_port}}", "-C", "{{pac_file}}"},
+			Command: []string{appAlpaca, "-l", placeholderLocalHost, "-p", placeholderLocalPort, "-C", placeholderPACFile},
 		},
 		Contexts: map[string]SwitchContext{
-			"home": {
+			contextHome: {
 				MacOSNetworkLocation: currentNetworkLocation(),
-				DNS:                  ContextDNSConfig{NetworkServices: currentNetworkServices(), Resolvers: []string{"127.0.0.2"}},
+				DNS:                  ContextDNSConfig{NetworkServices: currentNetworkServices(), Resolvers: []string{loopbackResolver}},
 				ProxyMode:            "direct",
-				Apps: AppLifecycleConfig{
+				Apps: LifecycleConfig{
 					Restart: []string{"docker"},
-					Reload:  []string{"unbound"},
+					Reload:  []string{appUnbound},
 				},
 			},
 			"work": {},
 		},
 		NetworkServices: nil,
 		DNS: DNSConfig{
-			LocalResolver: "127.0.0.2",
+			LocalResolver: loopbackResolver,
 		},
 		Unbound: UnboundConfig{
 			ForwardersFile: "/opt/homebrew/etc/unbound/conf.d/forwarders.conf",
 		},
 		Applications: map[string]ApplicationCommands{
-			"unbound": {
-				Reload:  []string{"unbound-control", "reload"},
+			appUnbound: {
+				Reload:  []string{"unbound-control", actionReload},
 				Restart: []string{"sudo", "launchctl", "kickstart", "-k", "system/net.unbound"},
 			},
 			"docker": {
@@ -219,13 +251,13 @@ func initConfig(path string) error {
 			},
 		},
 	}
-	homeContext := cfg.Contexts["home"]
+	homeContext := cfg.Contexts[contextHome]
 	homeContext.UnboundForwarders = currentUnboundForwarders(cfg.Unbound.ForwardersFile)
-	cfg.Contexts["home"] = homeContext
+	cfg.Contexts[contextHome] = homeContext
 	if err := saveConfig(path, cfg); err != nil {
 		return err
 	}
-	return saveRuntimeState(path, ConfigState{CurrentContext: "home"})
+	return saveRuntimeState(path, ConfigState{CurrentContext: contextHome})
 }
 
 type ConfigState struct {
@@ -260,7 +292,7 @@ func currentNetworkLocation() string {
 	if err != nil {
 		return "Automatic"
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "*") {
 			return strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "*")), "\"")
 		}
@@ -283,7 +315,7 @@ func currentUnboundForwarders(path string) []string {
 		return nil
 	}
 	var forwarders []string
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "forward-addr:") {
 			continue
@@ -296,7 +328,7 @@ func currentUnboundForwarders(path string) []string {
 	return forwarders
 }
 
-func loadConfig(path string) (Config, error) {
+func loadConfig(path string) (Config, error) { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	cfg, err := readConfigFile(path)
 	if err != nil {
 		return cfg, err
@@ -328,7 +360,7 @@ func loadConfig(path string) (Config, error) {
 		return cfg, errors.New("no context files found")
 	}
 	if cfg.DNS.LocalResolver == "" {
-		cfg.DNS.LocalResolver = "127.0.0.2"
+		cfg.DNS.LocalResolver = loopbackResolver
 	}
 	if cfg.Unbound.ForwardersFile == "" {
 		cfg.Unbound.ForwardersFile = "/opt/homebrew/etc/unbound/conf.d/forwarders.conf"

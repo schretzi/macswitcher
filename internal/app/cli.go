@@ -1,10 +1,22 @@
 package app
 
 import (
+	"github.com/schretzi/macswitcher/internal/version"
+
 	"github.com/spf13/cobra"
 )
 
 var configFile string
+
+// appName is the binary name: it drives the launchd label, the log file
+// names and the `version` output.
+const appName = "macswitcher"
+
+// licenseNotice is printed by `macswitcher version`.
+const licenseNotice = `Copyright (C) 2026 Martin Fuchsluger
+License: MIT <https://opensource.org/licenses/MIT>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.`
 
 // Execute runs the macswitcher command-line application.
 func Execute() error {
@@ -45,7 +57,11 @@ func newRootCommand() *cobra.Command {
 		configCommand(),
 		serviceCommand(),
 		observeCommand(),
+		version.NewCommand(appName, licenseNotice),
 	)
+
+	// `--version` and `version` report the same thing, from the same place.
+	root.Version = version.String(appName)
 	return root
 }
 
@@ -63,7 +79,7 @@ func contextCommand() *cobra.Command {
 		Short:   "Switch the active network context",
 		Args:    cobra.ExactArgs(1),
 		GroupID: "context",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			path, err := configuredPath()
 			if err != nil {
 				return err
@@ -79,7 +95,7 @@ func statusCommand() *cobra.Command {
 		Use:   "status",
 		Short: "Show the active context and service status",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configuredPath()
 			if err != nil {
 				return err
@@ -99,7 +115,7 @@ func proxyCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "set",
 			Short: "Set the local proxy in macOS, zsh, and Docker",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -110,7 +126,7 @@ func proxyCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "unset",
 			Short: "Unset the local proxy in macOS, zsh, and Docker",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -122,7 +138,7 @@ func proxyCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "run",
 			Short: "Run the configured Alpaca proxy runtime",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -133,7 +149,7 @@ func proxyCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "password-set",
 			Short: "Save the active forwarder proxy password in macOS Keychain",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -151,7 +167,7 @@ func detectAuthCommand() *cobra.Command {
 		Use:   "detect-auth",
 		Short: "Probe upstream proxy authentication methods",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configuredPath()
 			if err != nil {
 				return err
@@ -178,7 +194,7 @@ func configCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "init",
 			Short: "Create global and starter context configuration files",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -189,7 +205,7 @@ func configCommand() *cobra.Command {
 		&cobra.Command{
 			Use:   "validate",
 			Short: "Validate global and context configuration",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(_ *cobra.Command, _ []string) error {
 				path, err := configuredPath()
 				if err != nil {
 					return err
@@ -206,7 +222,7 @@ func observeCommand() *cobra.Command {
 		Use:   "observe",
 		Short: "Open a TUI showing Alpaca, Unbound, KerberosKeepAlive, and omt status",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configuredPath()
 			if err != nil {
 				return err
@@ -216,31 +232,7 @@ func observeCommand() *cobra.Command {
 	}
 }
 
-func serviceCommand() *cobra.Command {
-	command := &cobra.Command{
-		Use:     "service",
-		Short:   "Manage the launchd Alpaca proxy service",
-		GroupID: "service",
-	}
-	for name, spec := range map[string]struct {
-		short string
-		run   func() error
-	}{
-		"install":   {short: "Install the launchd user service", run: serviceInstall},
-		"uninstall": {short: "Uninstall the launchd user service", run: serviceUninstall},
-		"start":     {short: "Start the launchd user service", run: serviceStart},
-		"stop":      {short: "Stop the launchd user service", run: serviceStop},
-		"restart":   {short: "Restart the launchd user service", run: serviceRestart},
-		"status":    {short: "Show launchd user service status", run: serviceStatus},
-	} {
-		entry := spec
-		command.AddCommand(&cobra.Command{
-			Use:   name,
-			Short: spec.short,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return entry.run()
-			},
-		})
-	}
-	return command
-}
+// serviceCommand lives in service.go, built from the shared internal/service
+// package so the subtree is identical across macswitcher, kerberoskeepalive
+// and omt. Ranging over a map to build subcommands also produced a
+// non-deterministic order in --help and generated docs.

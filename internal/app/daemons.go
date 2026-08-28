@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -180,11 +181,11 @@ func systemDaemonActionCmd(verb, label string) (*exec.Cmd, error) {
 	domain := daemonScopeSystem
 	var shellCmd string
 	switch verb {
-	case "start":
+	case actionStart:
 		shellCmd = fmt.Sprintf("launchctl bootstrap %s %q", domain, plistPath)
-	case "stop":
+	case actionStop:
 		shellCmd = fmt.Sprintf("launchctl bootout %s %q", domain, plistPath)
-	case "restart":
+	case actionRestart:
 		shellCmd = fmt.Sprintf("launchctl bootout %s %q; launchctl bootstrap %s %q", domain, plistPath, domain, plistPath)
 	case "enable":
 		shellCmd = fmt.Sprintf("launchctl enable %s/%s", domain, label)
@@ -193,7 +194,9 @@ func systemDaemonActionCmd(verb, label string) (*exec.Cmd, error) {
 	default:
 		return nil, fmt.Errorf("unknown action %q", verb)
 	}
-	cmd := exec.Command("sudo", "sh", "-c", shellCmd) // #nosec G204 -- verb is one of a fixed set of internal actions; label/plistPath come from operator-controlled config, not untrusted input
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sudo", "sh", "-c", shellCmd) // #nosec G204 -- verb is one of a fixed set of internal actions; label/plistPath come from operator-controlled config, not untrusted input
 	return cmd, nil
 }
 
@@ -212,7 +215,7 @@ func expandTilde(path string) string {
 // kerberosTicketStatus summarizes the validity of a Kerberos credential
 // cache file via klist. It never returns an error for a missing/expired
 // ticket; those are reported through the returned summary/detail instead.
-func kerberosTicketStatus(ticketFile string) (valid bool, summary string, detail string) {
+func kerberosTicketStatus(ticketFile string) (valid bool, summary, detail string) {
 	if strings.TrimSpace(ticketFile) == "" {
 		return false, "not configured", "active context has no forwarder_proxy.ticket_file"
 	}
@@ -250,8 +253,8 @@ func omtAccountStatus() (summary string, lines []string, err error) {
 			continue
 		}
 		total++
-		fields := strings.Fields(line)
-		for _, f := range fields {
+		fields := strings.FieldsSeq(line)
+		for f := range fields {
 			if strings.EqualFold(f, "valid") {
 				valid++
 				break
@@ -284,7 +287,7 @@ func vpnInterfaceStatus(iface string) (up bool, detail string) {
 }
 
 var (
-	knownDaemonKeys   = map[string]bool{"unbound": true, "kerberos_keep_alive": true, "omt": true, "vpn": true}
+	knownDaemonKeys   = map[string]bool{appUnbound: true, "kerberos_keep_alive": true, "omt": true, "vpn": true}
 	knownDaemonFields = map[string]bool{"label": true, "scope": true, "interface": true}
 )
 

@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -11,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/schretzi/macswitcher/internal/logfile"
 )
 
 func detectAuth(cfgPath string, args []string) error {
@@ -60,7 +64,9 @@ func probeProxyAuth(proxyAddr, targetURL string) ([]string, int, string, error) 
 	if !strings.Contains(proxyURL, "://") {
 		proxyURL = "http://" + proxyURL
 	}
-	cmd := exec.Command("curl", "-sS", "-o", "/dev/null", "-D", "-", "-x", proxyURL, "--max-time", "12", targetURL) // #nosec G204 -- fixed "curl" binary; args are constructed proxy/target URLs, not passed through a shell
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "curl", "-sS", "-o", "/dev/null", "-D", "-", "-x", proxyURL, "--max-time", "12", targetURL) // #nosec G204 -- fixed "curl" binary; args are constructed proxy/target URLs, not passed through a shell
 	b, err := cmd.CombinedOutput()
 	raw := string(b)
 	statusCode := parseHTTPStatus(raw)
@@ -75,7 +81,7 @@ func probeProxyAuth(proxyAddr, targetURL string) ([]string, int, string, error) 
 }
 
 func parseHTTPStatus(headers string) int {
-	for _, line := range strings.Split(headers, "\n") {
+	for line := range strings.SplitSeq(headers, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(strings.ToUpper(line), "HTTP/") {
 			parts := strings.Fields(line)
@@ -92,7 +98,7 @@ func parseHTTPStatus(headers string) int {
 func parseProxyAuthenticateHeaders(headers string) []string {
 	seen := map[string]bool{}
 	methods := make([]string, 0)
-	for _, line := range strings.Split(headers, "\n") {
+	for line := range strings.SplitSeq(headers, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(strings.ToLower(line), "proxy-authenticate:") {
 			continue
@@ -139,7 +145,7 @@ func recommendRuntime(methods []string) string {
 	return "Auth method detected but uncommon; test cntlm first, then evaluate Kerberos-native client path if authentication still fails"
 }
 
-func runProxy(cfgPath string) error {
+func runProxy(cfgPath string) error { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return err
@@ -163,29 +169,57 @@ func runProxy(cfgPath string) error {
 	if len(cmdArgs) == 0 {
 		return errors.New("alpaca command is empty")
 	}
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- cmdArgs come from the operator-controlled config file (Alpaca command), not untrusted input
+	// No timeout: this is the proxy itself and runs until launchd stops it.
+	cmd := exec.CommandContext(context.Background(), cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- cmdArgs come from the operator-controlled config file (Alpaca command), not untrusted input
 	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) != "" {
 		ticketFile := strings.TrimSpace(ctx.ForwarderProxy.TicketFile)
-		if strings.HasPrefix(ticketFile, "~/") {
+		if after, ok0 := strings.CutPrefix(ticketFile, "~/"); ok0 {
 			if home, err := os.UserHomeDir(); err == nil {
-				ticketFile = filepath.Join(home, strings.TrimPrefix(ticketFile, "~/"))
+				ticketFile = filepath.Join(home, after)
 			}
 		}
 		cmd.Env = append(os.Environ(), "KRB5CCNAME="+ticketFile)
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// alpaca is chatty and runs for as long as the session does, so its output
+	// goes to macswitcher's own log rather than to launchd's StandardOutPath.
+	// newsyslog rotates that log by renaming it, and a plain inherited fd
+	// would go on filling the archive while the live log stayed empty -
+	// logfile.Writer re-stats and reopens instead. See the
+	// macos-launchd-services skill.
+	logPath, err := proxyLogPath()
+	if err != nil {
+		return err
+	}
+	logWriter, err := logfile.Open(logPath)
+	if err != nil {
+		return err
+	}
+	defer logWriter.Close()
+
+	cmd.Stdout = logWriter
+	cmd.Stderr = logWriter
 	cmd.Stdin = os.Stdin
-	fmt.Printf("running proxy for context %q: %s\n", cfg.CurrentContext, redactPasswordFromCommand(cmdArgs))
+
+	banner := fmt.Sprintf("running proxy for context %q: %s\n", cfg.CurrentContext, redactPasswordFromCommand(cmdArgs))
+	fmt.Print(banner)
+	if _, err := io.WriteString(logWriter, banner); err != nil {
+		return fmt.Errorf("writing to %s: %w", logPath, err)
+	}
 	return cmd.Run()
 }
 
-func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
+// proxyLogPath is ~/Library/Logs/macswitcher.log - flat, named after the
+// binary, matching every other job.
+func proxyLogPath() (string, error) {
+	return launchAgentService().LogPath()
+}
+
+func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	if len(alpaca.Command) == 0 {
 		return nil, errors.New("alpaca command is empty")
 	}
 	command := append([]string(nil), alpaca.Command...)
-	if command[0] == "alpaca" {
+	if command[0] == appAlpaca {
 		if binary := strings.TrimSpace(os.Getenv("MACSWITCHER_ALPACA_BINARY")); binary != "" {
 			command[0] = binary
 		}
@@ -197,7 +231,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 	forwarder := ForwarderProxyConfig{}
 	password := ""
 	var err error
-	if forwarderProxy != nil {
+	if forwarderProxy != nil { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 		forwarder = *forwarderProxy
 		if forwarder.PasswordKeychainAccount == "" {
 			forwarder.PasswordKeychainAccount = forwarder.Username
@@ -245,14 +279,14 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 		upstreamProxy = fmt.Sprintf("%s:%d", forwarder.ProxyServer, forwarder.Port)
 	}
 	replacements := map[string]string{
-		"{{local_host}}":     cfg.LocalProxy.Host,
-		"{{local_port}}":     strconv.Itoa(cfg.LocalProxy.Port),
+		placeholderLocalHost: cfg.LocalProxy.Host,
+		placeholderLocalPort: strconv.Itoa(cfg.LocalProxy.Port),
 		"{{cntlm_conf}}":     cntlmConfPath,
 		"{{proxy_server}}":   forwarder.ProxyServer,
 		"{{proxy_port}}":     strconv.Itoa(forwarder.Port),
 		"{{username}}":       forwarder.Username,
 		"{{password}}":       password,
-		"{{pac_file}}":       forwarder.PacFile,
+		placeholderPACFile:   forwarder.PacFile,
 		"{{upstream_url}}":   upstreamURL,
 		"{{auth_allowlist}}": authAllowlist,
 		"{{ticket_file}}":    ticketFile,
@@ -261,7 +295,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) {
 	out := make([]string, 0, len(command))
 	for i := 0; i < len(command); i++ {
 		arg := command[i]
-		if arg == "-C" && i+1 < len(command) && command[i+1] == "{{pac_file}}" && forwarder.PacFile == "" {
+		if arg == "-C" && i+1 < len(command) && command[i+1] == placeholderPACFile && forwarder.PacFile == "" {
 			i++
 			continue
 		}
@@ -403,7 +437,10 @@ func keychainPasswordSet(cfgPath string) error {
 	}
 	fmt.Printf("setting keychain password for service=%q account=%q\n", service, account)
 	fmt.Println("a macOS keychain prompt may appear")
-	cmd := exec.Command("security", "add-generic-password", "-U", "-s", service, "-a", account, "-w") // #nosec G204 -- fixed macOS "security" binary; service/account come from trusted config
+	// Not `ctx`: that name is already the macswitcher context in this scope.
+	cmdCtx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, "security", "add-generic-password", "-U", "-s", service, "-a", account, "-w") // #nosec G204 -- fixed macOS "security" binary; service/account come from trusted config
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -418,7 +455,9 @@ func keychainPasswordGet(service, account string) (string, error) {
 	if strings.TrimSpace(account) != "" {
 		args = append(args, "-a", account)
 	}
-	cmd := exec.Command("security", args...) // #nosec G204 -- fixed macOS "security" binary; args come from trusted config
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security", args...) // #nosec G204 -- fixed macOS "security" binary; args come from trusted config
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("read keychain password failed for service=%q account=%q: %w", service, account, err)

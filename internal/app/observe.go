@@ -59,8 +59,11 @@ func Observe(cfgPath string) error {
 
 func newObserveModel(cfg Config) observeModel {
 	rows := []daemonRow{
-		{name: "alpaca", configKey: "", label: launchAgentLabel, scope: daemonScopeUser, kind: daemonKindAlpaca},
-		{name: "unbound", configKey: "unbound", label: cfg.Daemons.Unbound.Label, scope: cfg.Daemons.Unbound.Scope, kind: daemonKindUnbound},
+		// macswitcher's own job, so its label comes from internal/service
+		// rather than from config: it is not something the user can point
+		// elsewhere.
+		{name: appAlpaca, configKey: "", label: launchAgentService().Label(), scope: daemonScopeUser, kind: daemonKindAlpaca},
+		{name: appUnbound, configKey: appUnbound, label: cfg.Daemons.Unbound.Label, scope: cfg.Daemons.Unbound.Scope, kind: daemonKindUnbound},
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
 		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
@@ -135,16 +138,17 @@ func alpacaDetail(cfg Config) []string {
 		return []string{fmt.Sprintf("alpaca is disabled for context %q", cfg.CurrentContext)}
 	}
 	lines := []string{fmt.Sprintf("context %q, proxy_mode=%s", cfg.CurrentContext, ctx.ProxyMode)}
-	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
+	switch {
+	case isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil:
 		fp := ctx.ForwarderProxy
 		auth := "keychain (NTLM/Basic)"
 		if strings.TrimSpace(fp.TicketFile) != "" {
 			auth = "kerberos ticket_file=" + fp.TicketFile
 		}
 		lines = append(lines, fmt.Sprintf("forwarding -> %s:%d via %s", fp.ProxyServer, fp.Port, auth))
-	} else if isForwardProxyMode(ctx.ProxyMode) {
+	case isForwardProxyMode(ctx.ProxyMode):
 		lines = append(lines, "proxy_mode is forward but forwarder_proxy is not configured")
-	} else {
+	default:
 		lines = append(lines, "no upstream forwarding (direct or off)")
 	}
 	return lines
@@ -153,7 +157,7 @@ func alpacaDetail(cfg Config) []string {
 func unboundDetail(cfg Config) []string {
 	forwarders := currentUnboundForwarders(cfg.Unbound.ForwardersFile)
 	if len(forwarders) == 0 {
-		return []string{fmt.Sprintf("no forward-addr entries in %s", cfg.Unbound.ForwardersFile)}
+		return []string{"no forward-addr entries in " + cfg.Unbound.ForwardersFile}
 	}
 	return []string{"forwarders: " + strings.Join(forwarders, ", ")}
 }
@@ -243,11 +247,11 @@ func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		return m, m.refreshAllCmd()
 	case "s":
-		return m, m.actionCmd("start")
+		return m, m.actionCmd(actionStart)
 	case "S":
-		return m, m.actionCmd("stop")
+		return m, m.actionCmd(actionStop)
 	case "R":
-		return m, m.actionCmd("restart")
+		return m, m.actionCmd(actionRestart)
 	case "e":
 		return m, m.actionCmd("enable")
 	case "d":
@@ -287,11 +291,11 @@ func (m observeModel) actionCmd(verb string) tea.Cmd {
 	}
 	var action func(label, scope string) error
 	switch verb {
-	case "start":
+	case actionStart:
 		action = launchdStart
-	case "stop":
+	case actionStop:
 		action = launchdStop
-	case "restart":
+	case actionRestart:
 		action = launchdRestart
 	case "enable":
 		action = launchdEnable

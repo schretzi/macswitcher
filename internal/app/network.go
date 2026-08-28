@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -20,10 +21,10 @@ func setLocalProxy(cfgPath string) error {
 		return err
 	}
 	for _, svc := range services {
-		if err := runCommand("networksetup", "-setwebproxy", svc, cfg.LocalProxy.Host, fmt.Sprintf("%d", cfg.LocalProxy.Port)); err != nil {
+		if err := runCommand("networksetup", "-setwebproxy", svc, cfg.LocalProxy.Host, strconv.Itoa(cfg.LocalProxy.Port)); err != nil {
 			return err
 		}
-		if err := runCommand("networksetup", "-setsecurewebproxy", svc, cfg.LocalProxy.Host, fmt.Sprintf("%d", cfg.LocalProxy.Port)); err != nil {
+		if err := runCommand("networksetup", "-setsecurewebproxy", svc, cfg.LocalProxy.Host, strconv.Itoa(cfg.LocalProxy.Port)); err != nil {
 			return err
 		}
 		if err := runCommand("networksetup", "-setwebproxystate", svc, "on"); err != nil {
@@ -137,7 +138,7 @@ func applyLocalResolverDNS(cfg Config) error {
 		resolvers = ctx.DNS.Resolvers
 	}
 	if resolvers[0] == "" {
-		resolvers[0] = "127.0.0.2"
+		resolvers[0] = loopbackResolver
 	}
 	for _, svc := range services {
 		args := append([]string{"-setdnsservers", svc}, resolvers...)
@@ -156,12 +157,12 @@ func applyLocalResolverDNS(cfg Config) error {
 // checkDNSResolution (run right after) is what actually verifies whether
 // DNS is working before the switch is allowed to continue.
 func restartUnboundIfConfigured(cfg Config) {
-	commands, ok := cfg.Applications["unbound"]
+	commands, ok := cfg.Applications[appUnbound]
 	if !ok || len(commands.Restart) == 0 {
 		fmt.Println("warning: no applications.unbound.restart configured; unbound may keep serving stale forwarders")
 		return
 	}
-	if err := runApplicationAction("unbound", "restart", commands); err != nil {
+	if err := runApplicationAction(appUnbound, actionRestart, commands); err != nil {
 		fmt.Printf("warning: could not restart unbound: %v\n", err)
 	}
 }

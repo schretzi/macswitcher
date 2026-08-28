@@ -117,10 +117,10 @@ func syncContextApplications(cfg Config, ctx SwitchContext) error {
 		name         string
 		applications []string
 	}{
-		{name: "stop", applications: ctx.Apps.Stop},
-		{name: "restart", applications: ctx.Apps.Restart},
-		{name: "reload", applications: ctx.Apps.Reload},
-		{name: "start", applications: ctx.Apps.Start},
+		{name: actionStop, applications: ctx.Apps.Stop},
+		{name: actionRestart, applications: ctx.Apps.Restart},
+		{name: actionReload, applications: ctx.Apps.Reload},
+		{name: actionStart, applications: ctx.Apps.Start},
 	}
 	for _, action := range actions {
 		for _, name := range action.applications {
@@ -144,7 +144,7 @@ func runApplicationAction(name, action string, commands ApplicationCommands) err
 		}
 		return nil
 	}
-	if action != "restart" && action != "reload" {
+	if action != actionRestart && action != actionReload {
 		return fmt.Errorf("application %q has no %s command", name, action)
 	}
 	if len(commands.Stop) == 0 || len(commands.Start) == 0 {
@@ -161,13 +161,13 @@ func runApplicationAction(name, action string, commands ApplicationCommands) err
 
 func applicationCommand(commands ApplicationCommands, action string) []string {
 	switch action {
-	case "start":
+	case actionStart:
 		return commands.Start
-	case "stop":
+	case actionStop:
 		return commands.Stop
-	case "restart":
+	case actionRestart:
 		return commands.Restart
-	case "reload":
+	case actionReload:
 		return commands.Reload
 	default:
 		return nil

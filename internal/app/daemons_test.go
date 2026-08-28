@@ -79,7 +79,7 @@ func TestInspectDaemonNotConfigured(t *testing.T) {
 func TestInspectDaemonUnknownLabel(t *testing.T) {
 	t.Parallel()
 
-	status := inspectDaemon("com.macswitcher.test-daemon-that-does-not-exist", daemonScopeUser)
+	status := inspectDaemon("com.schretzi.test-daemon-that-does-not-exist", daemonScopeUser)
 	if status.Err != nil {
 		t.Fatalf("unexpected error: %v", status.Err)
 	}
@@ -172,7 +172,7 @@ daemons:
   kerberoskeepalive:
     lable: kerberoskeepalive
   omt:
-    label: org.schretzi.omt-daemon
+    label: com.schretzi.omt
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
@@ -203,9 +203,9 @@ daemons:
   kerberos_keep_alive:
     label: com.example.kerberoskeepalive
   omt:
-    label: org.schretzi.omt-daemon
+    label: com.schretzi.omt
   vpn:
-    label: com.corp.vpn
+    label: com.schretzi.corp-vpn
     interface: utun99
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

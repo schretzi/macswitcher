@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"macswitcher/internal/app"
+	"github.com/schretzi/macswitcher/internal/app"
 )
 
 func main() {

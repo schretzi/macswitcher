@@ -17,6 +17,11 @@ builds:
       - arm64
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/schretzi/macswitcher/internal/version.version={{ .Version }}
+      - -X github.com/schretzi/macswitcher/internal/version.commit={{ .FullCommit }}
+      - -X github.com/schretzi/macswitcher/internal/version.date={{ .Date }}
 
 archives:
   - id: macswitcher

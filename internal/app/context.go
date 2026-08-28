@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func switchContext(cfgPath string, args []string) error {
+func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	fs := flag.NewFlagSet("switch", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -47,7 +47,7 @@ func switchContext(cfgPath string, args []string) error {
 	if err := checkDNSResolution(ctx); err != nil {
 		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check unbound, VPN, network location) and rerun `macswitcher switch %s`", err, selected)
 	}
-	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) {
+	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 		if err := unsetLocalProxy(cfgPath); err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ func status(cfgPath string) error {
 	return serviceStatus()
 }
 
-func configValidate(cfgPath string) error {
+func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return err
@@ -114,7 +114,7 @@ func configValidate(cfgPath string) error {
 		if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy == nil {
 			critical = append(critical, fmt.Sprintf("contexts.%s.proxy_mode is forward but forwarder_proxy is not configured", name))
 		}
-		if ctx.ForwarderProxy != nil {
+		if ctx.ForwarderProxy != nil { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 			if !isForwardProxyMode(ctx.ProxyMode) {
 				warnings = append(warnings, fmt.Sprintf("contexts.%s.forwarder_proxy is configured but proxy_mode is %q; it is only used when proxy_mode is forward", name, ctx.ProxyMode))
 			}
@@ -180,7 +180,7 @@ func configValidate(cfgPath string) error {
 func validateApplicationReferences(
 	cfg Config,
 	contextName string,
-	apps AppLifecycleConfig,
+	apps LifecycleConfig,
 	warnings *[]string,
 	critical *[]string,
 ) {
@@ -188,10 +188,10 @@ func validateApplicationReferences(
 		name         string
 		applications []string
 	}{
-		{name: "stop", applications: apps.Stop},
-		{name: "restart", applications: apps.Restart},
-		{name: "reload", applications: apps.Reload},
-		{name: "start", applications: apps.Start},
+		{name: actionStop, applications: apps.Stop},
+		{name: actionRestart, applications: apps.Restart},
+		{name: actionReload, applications: apps.Reload},
+		{name: actionStart, applications: apps.Start},
 	}
 	for _, action := range actions {
 		for _, application := range action.applications {
@@ -213,7 +213,7 @@ func validateApplicationReferences(
 			}
 			hasCommand := len(applicationCommand(commands, action.name)) > 0
 			hasFallback := len(commands.Stop) > 0 && len(commands.Start) > 0
-			if !hasCommand && (action.name == "restart" || action.name == "reload") {
+			if !hasCommand && (action.name == actionRestart || action.name == actionReload) {
 				hasCommand = hasFallback
 			}
 			if !hasCommand {

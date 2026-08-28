@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra/doc"
+	"github.com/schretzi/macswitcher/internal/app"
 
-	"macswitcher/internal/app"
+	"github.com/spf13/cobra/doc"
 )
 
 func main() {

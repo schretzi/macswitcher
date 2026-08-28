@@ -1,4 +1,4 @@
-module macswitcher
+module github.com/schretzi/macswitcher
 
 go 1.24.0
 

@@ -228,7 +228,7 @@ will then fail fast if DNS genuinely isn't working yet.
 status of every daemon macswitcher cares about, refreshed automatically every
 5 seconds:
 
-- **alpaca** — macswitcher's own launch agent (`com.macswitcher.proxy`,
+- **alpaca** — macswitcher's own launch agent (`com.schretzi.macswitcher`,
   installed by `service install`). Shows running/stopped, pid, uptime, the
   launchd restart counter (`runs`), and the active context's `proxy_mode`
   plus, in `forward` mode, the upstream host:port and whether auth is
@@ -257,7 +257,7 @@ daemons:
   kerberos_keep_alive:
     label: com.example.kerberoskeepalive
   omt:
-    label: org.example.omt-daemon
+    label: com.schretzi.omt
   vpn:
     label: com.example.vpn
     interface: utun99              # optional: enables the tunnel-up check
