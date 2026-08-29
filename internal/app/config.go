@@ -155,12 +155,13 @@ const (
 
 // Loopback addresses. mDNSResponder owns 127.0.0.1:53, so unbound listens on
 // 127.0.0.2 instead - see the unbound notes in MacbookSetup/Setup.md.
+//
+// AdGuard Home's 127.0.0.3 is deliberately not a constant here: nothing in
+// this package binds it, because it is reached only by pointing
+// dns.local_resolver at it in config.yaml while AdGuard Home is on trial.
 const (
 	loopbackLocal    = "127.0.0.1"
 	loopbackResolver = "127.0.0.2"
-	// loopbackAdGuard is where AdGuard Home listens while it is being
-	// evaluated next to unbound. Point dns.local_resolver here to try it.
-	loopbackAdGuard = "127.0.0.3"
 )
 
 // contextHome is the context `config init` seeds and falls back to.

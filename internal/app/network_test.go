@@ -104,7 +104,7 @@ func TestWriteAdGuardUpstreamsPreservesPerDomainEntries(t *testing.T) {
 	}
 	// AdGuard Home rejects a line with a trailing comment, so every comment
 	// has to sit on a line of its own.
-	for _, line := range strings.Split(string(got), "\n") {
+	for line := range strings.SplitSeq(string(got), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

@@ -39,18 +39,7 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 			return err
 		}
 		restartUnboundIfConfigured(cfg)
-		// The same forwarders, written again in AdGuard Home's syntax, while
-		// it is on trial next to unbound. Skipped entirely unless
-		// adguard.upstreams_file is set, and never fatal: unbound is still
-		// the resolver the machine points at, so a failure here must not
-		// abort a switch that otherwise succeeded.
-		if strings.TrimSpace(cfg.AdGuard.UpstreamsFile) != "" {
-			if err := writeAdGuardUpstreams(cfg, ctx.UnboundForwarders, selected); err != nil {
-				fmt.Printf("warning: could not write AdGuard Home upstreams: %v\n", err)
-			} else {
-				restartAdGuardIfConfigured(cfg)
-			}
-		}
+		syncAdGuardUpstreams(cfg, ctx.UnboundForwarders, selected)
 	}
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err
@@ -79,6 +68,23 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 	}
 	fmt.Printf("switched context to %s\n", selected)
 	return nil
+}
+
+// syncAdGuardUpstreams writes the context's forwarders a second time, in
+// AdGuard Home's syntax, while it is on trial next to unbound.
+//
+// It is skipped entirely unless adguard.upstreams_file is set, and it is
+// never fatal: unbound is still the resolver the machine points at, so a
+// failure here must not abort a switch that otherwise succeeded.
+func syncAdGuardUpstreams(cfg Config, forwarders []string, selected string) {
+	if strings.TrimSpace(cfg.AdGuard.UpstreamsFile) == "" {
+		return
+	}
+	if err := writeAdGuardUpstreams(cfg, forwarders, selected); err != nil {
+		fmt.Printf("warning: could not write AdGuard Home upstreams: %v\n", err)
+		return
+	}
+	restartAdGuardIfConfigured(cfg)
 }
 
 func status(cfgPath string) error {
