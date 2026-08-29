@@ -307,68 +307,80 @@ func TestVPNInetPattern(t *testing.T) {
 func TestParseTunnelingStatus(t *testing.T) {
 	t.Parallel()
 
-	const header = "NAME  KIND  LOCAL            STATE  DESTINATION      VIA\n"
-
 	tests := []struct {
 		name        string
-		out         string
+		in          string
 		wantSummary string
 		wantLines   []string
+		wantErr     bool
 	}{
 		{
-			name:        "empty output",
-			out:         "",
+			name:    "not JSON",
+			in:      "NAME  KIND  STATE\nfoo  ssh  OPEN",
+			wantErr: true,
+		},
+		{
+			name:        "no tunnels",
+			in:          `{"daemonRunning":true,"tunnels":[]}`,
 			wantSummary: "no tunnels configured",
 		},
 		{
-			name:        "header only",
-			out:         strings.TrimRight(header, "\n"),
-			wantSummary: "no tunnels configured",
+			name:        "all healthy",
+			in:          `{"daemonRunning":true,"tunnels":[{"name":"a","state":"OK"},{"name":"b","state":"OK"}]}`,
+			wantSummary: "2/2 tunnels ok",
 		},
 		{
-			name: "all open lists nothing",
-			out: header +
-				"jump-dev  gcp  127.0.0.1:10022  OPEN  host:22   iap p/z\n" +
-				"k8s-dev   ssh  127.0.0.1:10443  OPEN  10.0.0.1:443  me@localhost:10022",
-			wantSummary: "2/2 tunnels open",
+			// IDLE is not counted as ok: nothing has used the tunnel, which
+			// is not evidence that it works. Reporting it as healthy is the
+			// optimism that hid a tunnel to a deleted GCP project.
+			name:        "idle tunnels are called out, not counted as ok",
+			in:          `{"daemonRunning":true,"tunnels":[{"name":"a","state":"OK"},{"name":"b","state":"IDLE"}]}`,
+			wantSummary: "1/2 tunnels ok, 1 unused",
 		},
 		{
-			name: "closed tunnels are named",
-			out: header +
-				"jump-dev  gcp  127.0.0.1:10022  OPEN    host:22       iap p/z\n" +
-				"k8s-dev   ssh  127.0.0.1:10443  CLOSED  10.0.0.1:443  me@localhost:10022",
-			wantSummary: "1/2 tunnels open",
-			wantLines:   []string{"closed: k8s-dev"},
+			name: "failing tunnels are named with their reason",
+			in: `{"daemonRunning":true,"tunnels":[
+				{"name":"jump-dev","state":"OK"},
+				{"name":"jump-neo","state":"FAILING","lastError":"sent 12 bytes, received nothing back"}]}`,
+			wantSummary: "1/2 tunnels ok",
+			wantLines: []string{
+				"unhealthy: jump-neo (failing)",
+				"jump-neo: sent 12 bytes, received nothing back",
+			},
 		},
 		{
-			// A tunnel named "OPEN..." must not be miscounted, and the
-			// STATE column is matched as a whole field, not a substring.
-			name: "state is matched as a whole field",
-			out: header +
-				"reopened  ssh  127.0.0.1:1  CLOSED  h:1  v",
-			wantSummary: "0/1 tunnels open",
-			wantLines:   []string{"closed: reopened"},
+			name:        "down tunnels count as unhealthy",
+			in:          `{"daemonRunning":false,"tunnels":[{"name":"a","state":"DOWN"}]}`,
+			wantSummary: "0/1 tunnels ok (no daemon)",
+			wantLines:   []string{"unhealthy: a (down)"},
 		},
 		{
-			name: "long closed list is capped",
-			out: header +
-				"a  ssh  127.0.0.1:1  CLOSED  h:1  v\n" +
-				"b  ssh  127.0.0.1:2  CLOSED  h:1  v\n" +
-				"c  ssh  127.0.0.1:3  CLOSED  h:1  v\n" +
-				"d  ssh  127.0.0.1:4  CLOSED  h:1  v\n" +
-				"e  ssh  127.0.0.1:5  CLOSED  h:1  v\n" +
-				"f  ssh  127.0.0.1:6  CLOSED  h:1  v\n" +
-				"g  ssh  127.0.0.1:7  CLOSED  h:1  v\n" +
-				"h  ssh  127.0.0.1:8  CLOSED  h:1  v",
-			wantSummary: "0/8 tunnels open",
-			wantLines:   []string{"closed: a, b, c, d, e, f (+2 more)"},
+			name: "long unhealthy list is capped",
+			in: `{"daemonRunning":true,"tunnels":[
+				{"name":"a","state":"DOWN"},{"name":"b","state":"DOWN"},
+				{"name":"c","state":"DOWN"},{"name":"d","state":"DOWN"},
+				{"name":"e","state":"DOWN"},{"name":"f","state":"DOWN"},
+				{"name":"g","state":"DOWN"},{"name":"h","state":"DOWN"}]}`,
+			wantSummary: "0/8 tunnels ok",
+			wantLines: []string{
+				"unhealthy: a (down), b (down), c (down), d (down), e (down), f (down) (+2 more)",
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			summary, lines := parseTunnelingStatus(tt.out)
+			summary, lines, err := parseTunnelingStatus([]byte(tt.in))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseTunnelingStatus() error = %v", err)
+			}
 			if summary != tt.wantSummary {
 				t.Errorf("summary = %q, want %q", summary, tt.wantSummary)
 			}

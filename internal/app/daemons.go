@@ -1,14 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -281,94 +282,115 @@ func tunnelingInstalled() bool {
 	return err == nil
 }
 
-// maxClosedTunnelsShown caps how many closed tunnels are listed by name.
+// maxFailingTunnelsShown caps how many unhealthy tunnels are listed by name.
 // observe renders every row's detail lines at once, not just the selected
-// row's, so an unbounded list here would push the other daemons and the key
-// bindings off the screen — which is the opposite of what a status TUI is
-// for. Beyond the cap it says how many more there are.
-const maxClosedTunnelsShown = 6
+// row's, so an unbounded list would push the other daemons and the key
+// bindings off the screen. Beyond the cap it says how many more there are.
+const maxFailingTunnelsShown = 6
 
-// tunnelingTunnelStatus summarizes `tunneling status`: how many configured
-// tunnels are actually listening, and the names of any that are not.
+// tunnelingStatus is the subset of `tunneling status --json` this needs.
 //
-// Only the *closed* ones are named. A healthy config here is a dozen-plus
-// tunnels, and listing them all every refresh would drown the other rows;
-// "13/13 tunnels open" is the whole signal when nothing is wrong.
+// JSON, not the table: the table's STATE vocabulary is presentation, and
+// scraping it broke once already when "OPEN" became OK/IDLE/FAILING/DOWN.
+type tunnelingStatus struct {
+	DaemonRunning bool `json:"daemonRunning"`
+	Tunnels       []struct {
+		Name      string `json:"name"`
+		State     string `json:"state"`
+		LastError string `json:"lastError"`
+	} `json:"tunnels"`
+}
+
+// tunnelingTunnelStatus summarizes `tunneling status --json`: how many
+// tunnels are healthy, and the names of any that are not.
 //
-// It cannot use runCommandOutput. `tunneling status` deliberately exits
-// non-zero when any tunnel's local port is closed, and runCommandOutput
-// throws the output away on a non-zero exit — which would blank the row in
-// precisely the situation this is here to show.
+// Only unhealthy tunnels are named. A healthy setup here is a dozen-plus
+// tunnels and listing them all every refresh would drown the other rows.
+//
+// It cannot use runCommandOutput: `tunneling status` deliberately exits
+// non-zero when any tunnel is down or failing, and runCommandOutput discards
+// the output on a non-zero exit — which would blank the row in precisely the
+// situation this is here to show.
 func tunnelingTunnelStatus() (summary string, lines []string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
-	// #nosec G204 -- fixed binary name resolved from PATH, no arguments
-	// derived from user input.
-	cmd := exec.CommandContext(ctx, "tunneling", "status")
-	// Not CombinedOutput: on the non-zero exit that closed tunnels produce,
-	// tunneling also writes "error: N of M tunnel(s) are not listening" to
-	// stderr, and merging that into stdout makes it parse as one more table
-	// row — inflating the tunnel count and listing "error:" as a tunnel name.
+	// #nosec G204 -- fixed binary name resolved from PATH, fixed arguments.
+	cmd := exec.CommandContext(ctx, "tunneling", "status", "--json")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	stdout, runErr := cmd.Output()
-	out := strings.TrimRight(string(stdout), "\n")
 
 	if ctx.Err() != nil {
 		return "", nil, fmt.Errorf("tunneling status timed out after %s: %w", commandTimeout, ctx.Err())
 	}
-	// A non-zero exit *with* a table is the "some tunnels are down" case,
-	// which is exactly what this reports. A non-zero exit with no table is a
-	// real failure — a missing or unparsable config, say.
-	if runErr != nil && strings.TrimSpace(out) == "" {
+	if len(bytes.TrimSpace(stdout)) == 0 {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return "", nil, errors.New(detail)
 		}
-		return "", nil, fmt.Errorf("tunneling status: %w", runErr)
+		if runErr != nil {
+			return "", nil, fmt.Errorf("tunneling status: %w", runErr)
+		}
+		return "", nil, errors.New("tunneling status produced no output")
 	}
 
-	summary, lines = parseTunnelingStatus(out)
+	summary, lines, err = parseTunnelingStatus(stdout)
+	if err != nil {
+		return "", nil, err
+	}
 	return summary, lines, nil
 }
 
-// parseTunnelingStatus turns the `tunneling status` table into a one-line
-// summary plus, when something is wrong, the names of the closed tunnels.
-// Split out from tunnelingTunnelStatus so the parsing is testable without a
-// tunneling binary on PATH.
-func parseTunnelingStatus(out string) (summary string, lines []string) {
-	rows := strings.Split(out, "\n")
-	if len(rows) < 2 {
-		return "no tunnels configured", nil
+// parseTunnelingStatus turns `tunneling status --json` into a one-line
+// summary plus, when something is wrong, the unhealthy tunnels. Split out so
+// the parsing is testable without a tunneling binary on PATH.
+func parseTunnelingStatus(stdout []byte) (summary string, lines []string, err error) {
+	var doc tunnelingStatus
+	if err := json.Unmarshal(stdout, &doc); err != nil {
+		return "", nil, fmt.Errorf("parsing tunneling status: %w", err)
 	}
-	total, open := 0, 0
-	var closed []string
-	for _, row := range rows[1:] { // skip the header row
-		fields := strings.Fields(row)
-		if len(fields) == 0 {
-			continue
-		}
-		total++
-		if slices.Contains(fields, "OPEN") {
-			open++
-			continue
-		}
-		closed = append(closed, fields[0]) // the NAME column
-	}
-	if total == 0 {
-		return "no tunnels configured", nil
+	if len(doc.Tunnels) == 0 {
+		return "no tunnels configured", nil, nil
 	}
 
-	summary = fmt.Sprintf("%d/%d tunnels open", open, total)
-	if len(closed) == 0 {
-		return summary, nil
+	// IDLE is deliberately not counted as healthy: it means nothing has used
+	// the tunnel, which is not evidence that it works.
+	var ok, idle int
+	var unhealthy []string
+	details := make([]string, 0, 2)
+	for _, t := range doc.Tunnels {
+		switch t.State {
+		case "OK":
+			ok++
+		case "IDLE", "UNKNOWN":
+			idle++
+		default: // FAILING, DOWN, anything new
+			unhealthy = append(unhealthy, t.Name+" ("+strings.ToLower(t.State)+")")
+			if t.LastError != "" && len(details) < 2 {
+				details = append(details, t.Name+": "+t.LastError)
+			}
+		}
 	}
-	shown, suffix := closed, ""
-	if len(shown) > maxClosedTunnelsShown {
-		shown = shown[:maxClosedTunnelsShown]
-		suffix = fmt.Sprintf(" (+%d more)", len(closed)-maxClosedTunnelsShown)
+
+	summary = fmt.Sprintf("%d/%d tunnels ok", ok, len(doc.Tunnels))
+	if idle > 0 {
+		summary += fmt.Sprintf(", %d unused", idle)
 	}
-	return summary, []string{"closed: " + strings.Join(shown, ", ") + suffix}
+	if !doc.DaemonRunning {
+		summary += " (no daemon)"
+	}
+	if len(unhealthy) == 0 {
+		return summary, nil, nil
+	}
+
+	shown, suffix := unhealthy, ""
+	if len(shown) > maxFailingTunnelsShown {
+		shown = shown[:maxFailingTunnelsShown]
+		suffix = fmt.Sprintf(" (+%d more)", len(unhealthy)-maxFailingTunnelsShown)
+	}
+	lines = append(lines, "unhealthy: "+strings.Join(shown, ", ")+suffix)
+	lines = append(lines, details...)
+	return summary, lines, nil
 }
 
 // containerRuntimeDetail reports what apple/container and kiac are doing.
@@ -395,7 +417,7 @@ func containerRuntimeDetail() []string {
 		return lines
 	}
 	var summary []string
-	for _, line := range strings.Split(clusters, "\n") {
+	for line := range strings.SplitSeq(clusters, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || strings.EqualFold(fields[0], "NAME") {
 			continue
@@ -417,8 +439,8 @@ func containerRuntimeDetail() []string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }
