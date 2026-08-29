@@ -6,7 +6,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // daemonKind selects which extra, daemon-specific detail lines observeModel
@@ -40,9 +39,12 @@ type observeModel struct {
 	cfg          Config
 	rows         []daemonRow
 	cursor       int
+	width        int
+	height       int
 	message      string
 	messageIsErr bool
 	quitting     bool
+	logs         logModal
 }
 
 // Observe starts the interactive TUI showing the status of macswitcher's own
@@ -262,7 +264,19 @@ func vpnDetail(cfg Config) []string {
 func (m observeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.logs.open {
+			return m.handleLogKey(msg)
+		}
 		return m.handleKey(msg)
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.logs.setSize(m.modalViewportSize())
+		return m, nil
+	case logLoadedMsg:
+		return m.handleLogLoaded(msg)
+	case logFollowMsg:
+		return m.handleLogFollow(msg)
 	case refreshMsg:
 		if msg.index >= 0 && msg.index < len(m.rows) {
 			m.rows[msg.index].status = msg.status
@@ -307,6 +321,8 @@ func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		return m, m.refreshAllCmd()
+	case "l":
+		return m.openLogModal()
 	case "s":
 		return m, m.actionCmd(actionStart)
 	case "S":
@@ -371,77 +387,94 @@ func (m observeModel) actionCmd(verb string) tea.Cmd {
 	}
 }
 
-var (
-	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	styleRunning  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	styleStopped  = lipgloss.NewStyle().Foreground(lipgloss.Color("227"))
-	styleMissing  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	styleHeader   = lipgloss.NewStyle().Bold(true).Underline(true)
-)
-
-func (m observeModel) View() string {
-	if m.quitting {
-		return ""
+// openLogModal opens the log viewer on the selected row. A row with no
+// launchd label has nothing to look at, and one whose plist redirects
+// neither stream (Homebrew's unbound logs to StandardIO) opens with a note
+// saying so, rather than an empty pane the reader has to interpret.
+func (m observeModel) openLogModal() (tea.Model, tea.Cmd) {
+	row := m.rows[m.cursor]
+	if strings.TrimSpace(row.label) == "" {
+		m.message = row.name + ": no launchd label configured, so no log to show"
+		m.messageIsErr = true
+		return m, nil
 	}
-	var b strings.Builder
-	b.WriteString(styleHeader.Render("macswitcher observe") + "\n\n")
-	for i, row := range m.rows {
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-		line := cursor + renderRowSummary(row)
-		if i == m.cursor {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(line + "\n")
-		for _, extra := range row.extra {
-			b.WriteString(styleDim.Render("      "+extra) + "\n")
-		}
-		b.WriteString("\n")
+	m.logs = logModal{
+		open:     true,
+		rowName:  row.name,
+		sources:  daemonLogSources(row),
+		viewport: newLogViewport(m.modalViewportSize()),
 	}
-	if m.message != "" {
-		if m.messageIsErr {
-			b.WriteString(styleError.Render(m.message) + "\n\n")
-		} else {
-			b.WriteString(m.message + "\n\n")
-		}
+	src, ok := m.logs.source()
+	if !ok {
+		m.logs.note = row.label + " declares no StandardOutPath or StandardErrorPath, so it writes no log file"
+		return m, nil
 	}
-	b.WriteString(styleDim.Render(
-		"↑/↓ select  s start  S stop  R restart  e enable  d disable  r refresh  q quit",
-	))
-	return b.String()
+	return m, loadLogCmd(src)
 }
 
-func renderRowSummary(row daemonRow) string {
-	name := fmt.Sprintf("%-18s", row.name)
-	if strings.TrimSpace(row.label) == "" {
-		return name + styleMissing.Render(fmt.Sprintf("not configured (set daemons.%s.label)", row.configKey))
+// handleLogLoaded installs a finished read, unless it is stale: a load that
+// lands after the modal closed, or after tab moved to the other file, would
+// otherwise overwrite whatever is on screen now.
+func (m observeModel) handleLogLoaded(msg logLoadedMsg) (tea.Model, tea.Cmd) {
+	src, ok := m.logs.source()
+	if !m.logs.open || !ok || src.path != msg.path {
+		return m, nil
 	}
-	scopeTag := ""
-	if normalizeDaemonScope(row.scope) == daemonScopeSystem {
-		scopeTag = "[system] "
+	m.logs.loadErr = msg.err
+	m.logs.setContent(msg.lines)
+	return m, nil
+}
+
+// handleLogFollow re-reads the followed log and schedules the next tick, as
+// long as this tick still belongs to the live follow session.
+func (m observeModel) handleLogFollow(msg logFollowMsg) (tea.Model, tea.Cmd) {
+	src, ok := m.logs.source()
+	if !m.logs.open || !m.logs.follow || msg.seq != m.logs.seq || !ok {
+		return m, nil
 	}
-	if row.status.Err != nil {
-		return name + styleMissing.Render(scopeTag+row.status.Err.Error())
-	}
-	if !row.status.Installed {
-		return name + styleMissing.Render(fmt.Sprintf("%snot installed (%s)", scopeTag, row.label))
-	}
-	var state string
-	switch {
-	case row.status.Running:
-		uptime := "unknown uptime"
-		if !row.status.StartedAt.IsZero() {
-			uptime = "up " + time.Since(row.status.StartedAt).Round(time.Second).String()
+	return m, tea.Batch(loadLogCmd(src), followCmd(msg.seq))
+}
+
+func (m observeModel) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "l", "ctrl+c":
+		m.logs = logModal{}
+		return m, nil
+	case "tab", "shift+tab":
+		if len(m.logs.sources) < 2 {
+			return m, nil
 		}
-		state = styleRunning.Render(fmt.Sprintf("running pid=%d %s runs=%d", row.status.PID, uptime, row.status.Runs))
-	case row.status.Loaded:
-		state = styleStopped.Render(fmt.Sprintf("loaded, not running (last exit=%d)", row.status.LastExitCode))
-	default:
-		state = styleDim.Render("stopped")
+		step := 1
+		if msg.String() == "shift+tab" {
+			step = len(m.logs.sources) - 1
+		}
+		m.logs.active = (m.logs.active + step) % len(m.logs.sources)
+		m.logs.loadErr = nil
+		src, _ := m.logs.source()
+		m.logs.setContent(nil)
+		return m, loadLogCmd(src)
+	case "f":
+		m.logs.follow = !m.logs.follow
+		src, ok := m.logs.source()
+		if !m.logs.follow || !ok {
+			return m, nil
+		}
+		m.logs.seq++
+		return m, tea.Batch(loadLogCmd(src), followCmd(m.logs.seq))
+	case "r":
+		src, ok := m.logs.source()
+		if !ok {
+			return m, nil
+		}
+		return m, loadLogCmd(src)
 	}
-	return name + scopeTag + fmt.Sprintf("%-8s ", row.label) + state
+	var cmd tea.Cmd
+	m.logs.viewport, cmd = m.logs.viewport.Update(msg)
+	// Scrolling back through history is incompatible with being dragged to
+	// the newest line every second, so reading away from the bottom turns
+	// follow off rather than fighting it.
+	if m.logs.follow && !m.logs.viewport.AtBottom() {
+		m.logs.follow = false
+	}
+	return m, cmd
 }
