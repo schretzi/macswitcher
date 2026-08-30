@@ -197,6 +197,9 @@ const (
 	// loopbackIPv6 appears in every no_proxy list and in the generated PAC's
 	// direct rules.
 	loopbackIPv6 = "::1"
+	// hostKubernetes is the /etc/hosts alias for the cluster API server, in
+	// the default no_proxy list because it resolves only on this machine.
+	hostKubernetes = "kubernetes"
 )
 
 // contextHome is the context `config init` seeds and falls back to.
@@ -273,7 +276,7 @@ func initConfig(path string) error {
 		LocalProxy: LocalProxyConfig{
 			Host:    loopbackLocal,
 			Port:    3128,
-			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, "kubernetes"},
+			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, hostKubernetes},
 		},
 		Alpaca: AlpacaConfig{
 			Enabled: true,

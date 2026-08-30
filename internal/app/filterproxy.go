@@ -218,6 +218,10 @@ func writeFilterPAC(cfg Config) (string, error) {
 	return path, nil
 }
 
+// filterStatusDisabled is what status prints when the block is off - named
+// so the test can assert on the same value rather than a second copy of it.
+const filterStatusDisabled = "disabled"
+
 // filterProxyStatusLine is the one-line summary `macswitcher status` prints.
 //
 // It exists because the fail-open PAC is silent by design: when the filter is
@@ -226,7 +230,7 @@ func writeFilterPAC(cfg Config) (string, error) {
 // reporting what the configuration intends.
 func filterProxyStatusLine(cfg Config, ctx SwitchContext) string {
 	if !cfg.FilterProxy.Enabled {
-		return "disabled"
+		return filterStatusDisabled
 	}
 	addr := filterProxyAddr(cfg)
 	if !filterProxyAppliesTo(cfg, ctx) {

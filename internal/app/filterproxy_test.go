@@ -13,7 +13,7 @@ func filterProxyTestConfig() Config {
 		LocalProxy: LocalProxyConfig{
 			Host:    loopbackLocal,
 			Port:    3128,
-			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, "kubernetes", "kiac"},
+			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, hostKubernetes, "kiac"},
 		},
 		FilterProxy: FilterProxyConfig{
 			Enabled:  true,
@@ -56,7 +56,7 @@ func TestRenderFilterPACRoutesLocalTrafficDirect(t *testing.T) {
 	// The no_proxy list and filter_proxy.direct both have to reach the PAC -
 	// the whole reason macswitcher generates it instead of pointing at a
 	// hand-written file is that these lists must not drift apart.
-	for _, want := range []string{"kubernetes", "kiac", ".ts.net"} {
+	for _, want := range []string{hostKubernetes, "kiac", ".ts.net"} {
 		if !strings.Contains(pac, want) {
 			t.Errorf("generated PAC does not mention %q:\n%s", want, pac)
 		}
@@ -107,7 +107,7 @@ func TestFilterProxyDirectHostsDeduplicates(t *testing.T) {
 	t.Parallel()
 
 	cfg := filterProxyTestConfig()
-	cfg.FilterProxy.Direct = []string{"kubernetes", ".ts.net", "kubernetes"}
+	cfg.FilterProxy.Direct = []string{hostKubernetes, ".ts.net", hostKubernetes}
 	hosts := filterProxyDirectHosts(cfg)
 
 	seen := map[string]int{}
@@ -217,7 +217,7 @@ func TestFilterProxyStatusLineReportsTheSilentCase(t *testing.T) {
 	}
 
 	cfg.FilterProxy.Enabled = false
-	if got := filterProxyStatusLine(cfg, cfg.Contexts[contextHome]); got != "disabled" {
+	if got := filterProxyStatusLine(cfg, cfg.Contexts[contextHome]); got != filterStatusDisabled {
 		t.Errorf("disabled status line = %q", got)
 	}
 }
