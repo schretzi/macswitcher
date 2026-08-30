@@ -188,7 +188,10 @@ func TestWithEnvPreservesOrder(t *testing.T) {
 // fakeLaunchctl records the launchctl invocations a test provokes and answers
 // them from a script.
 type fakeLaunchctl struct {
-	calls []string
+	failBootstrapOnce bool
+	bootstraps        int
+	bootouts          int
+	calls             []string
 	// loaded is consulted by "print": true means the job is registered.
 	loaded bool
 	// printOutput is what a successful "print" returns.
@@ -222,6 +225,7 @@ func (f *fakeLaunchctl) run(args ...string) (string, error) {
 		return f.printOutput, nil
 	case "bootout":
 		f.bootoutSeen = true
+		f.bootouts++
 		if f.unloadAfter == 0 {
 			f.loaded = false
 		}
@@ -230,7 +234,8 @@ func (f *fakeLaunchctl) run(args ...string) (string, error) {
 		}
 		return "", nil
 	case "bootstrap":
-		if f.failBootstrap {
+		f.bootstraps++
+		if f.failBootstrap || (f.failBootstrapOnce && f.bootstraps == 1) {
 			return "Bootstrap failed: 5: Input/output error", errors.New("exit status 5")
 		}
 		// Loading again ends the previous teardown, so the unload countdown
@@ -687,5 +692,60 @@ func TestCommandRejectsUnexpectedArguments(t *testing.T) {
 	s, _ := installedService(t, &fakeLaunchctl{})
 	if _, err := runCmd(t, s, nil, "status", "extra"); err == nil {
 		t.Error("`service status extra` was accepted, want an argument error")
+	}
+}
+
+// launchd reports "already loaded" as exit 5 / "Input/output error", which
+// reads like a disk fault. Start must ask launchd what happened rather than
+// trust the exit code, or `service install` fails on every run where the job
+// was already up - which is most of them.
+func TestStartTreatsAlreadyLoadedAsSuccess(t *testing.T) {
+	// installedService uses t.Setenv, which rules out t.Parallel.
+	fake := &fakeLaunchctl{failBootstrap: true, loaded: true, printOutput: "state = running"}
+	s, _ := installedService(t, fake)
+	writePlistFor(t, s)
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start() = %v, want nil when the job turns out to be loaded", err)
+	}
+	if fake.bootoutSeen {
+		t.Fatal("Start() booted out a job that was already running")
+	}
+}
+
+// The other half: bootstrap failed and the job really is not there. Start
+// clears the label and retries once rather than giving up.
+func TestStartRetriesAfterClearingAStaleLabel(t *testing.T) {
+	// installedService uses t.Setenv, which rules out t.Parallel.
+	fake := &fakeLaunchctl{failBootstrapOnce: true}
+	s, _ := installedService(t, fake)
+	writePlistFor(t, s)
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start() = %v, want nil after the retry", err)
+	}
+	// Counted, not a flag: a successful bootstrap resets bootoutSeen, which is
+	// exactly what the retry ends with.
+	if fake.bootouts != 1 {
+		t.Fatalf("bootouts = %d, want 1 - the retry must clear the stale label first", fake.bootouts)
+	}
+	if fake.bootstraps != 2 {
+		t.Fatalf("bootstraps = %d, want 2 (the failure and the retry)", fake.bootstraps)
+	}
+}
+
+// writePlistFor puts a file where Start expects one. Start only stats it, so
+// the contents do not matter - these tests are about the launchctl dance.
+func writePlistFor(t *testing.T, s *Service) {
+	t.Helper()
+	path, err := s.PlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("<plist/>\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

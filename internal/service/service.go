@@ -396,6 +396,29 @@ func (s *Service) Start() error {
 		}
 		return err
 	}
+	// The first attempt's output is deliberately dropped: if this turns out to
+	// be the "already loaded" case it is misleading, and if the retry below
+	// fails too, that attempt's message is the one worth reporting.
+	if _, err := s.run("bootstrap", guiDomain(), plistPath); err == nil {
+		return nil
+	}
+
+	// "Bootstrap failed: 5: Input/output error" is what launchd says when the
+	// label is *already loaded*. Measured, not guessed: bootstrapping a job
+	// that is running gives exactly that, while a bootout followed immediately
+	// by a write and a bootstrap succeeds. It reads like a disk fault and is
+	// nothing of the sort, which is why it cost an afternoon twice.
+	//
+	// So do not trust the exit code - ask launchd what actually happened.
+	if s.Loaded() {
+		return nil
+	}
+
+	// Not loaded either. Then launchd is holding the label somewhere
+	// `launchctl print` cannot see it, which is the same blind spot that lets
+	// Loaded() report false and Stop skip its bootout. Clear it and try once.
+	_, _ = s.run("bootout", s.serviceTarget())
+	s.waitUnloaded()
 	if out, err := s.run("bootstrap", guiDomain(), plistPath); err != nil {
 		return fmt.Errorf("launchctl bootstrap %s: %w: %s", s.Label(), err, out)
 	}
