@@ -55,11 +55,11 @@ func TestLaunchAgentPlistPath(t *testing.T) {
 func TestAgentPlistPathSystemScope(t *testing.T) {
 	t.Parallel()
 
-	got, err := agentPlistPath(daemonScopeSystem, "net.unbound")
+	got, err := agentPlistPath(daemonScopeSystem, "com.schretzi.adguardhome")
 	if err != nil {
 		t.Fatalf("agentPlistPath() error = %v", err)
 	}
-	want := filepath.Join("/Library", "LaunchDaemons", "net.unbound.plist")
+	want := filepath.Join("/Library", "LaunchDaemons", "com.schretzi.adguardhome.plist")
 	if got != want {
 		t.Fatalf("agentPlistPath() = %q, want %q", got, want)
 	}
@@ -198,8 +198,8 @@ func TestDaemonsConfigWarningsCleanConfig(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	body := `
 daemons:
-  unbound:
-    label: net.unbound
+  adguardhome:
+    label: com.schretzi.adguardhome
     scope: system
   kerberos_keep_alive:
     label: com.example.kerberoskeepalive

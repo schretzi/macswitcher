@@ -18,7 +18,6 @@ type Config struct {
 	Alpaca          AlpacaConfig                   `yaml:"alpaca" mapstructure:"alpaca"`
 	NetworkServices []string                       `yaml:"network_services" mapstructure:"network_services"`
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
-	Unbound         UnboundConfig                  `yaml:"unbound" mapstructure:"unbound"`
 	AdGuard         AdGuardConfig                  `yaml:"adguard" mapstructure:"adguard"`
 	Daemons         DaemonsConfig                  `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
@@ -32,13 +31,18 @@ type LocalProxyConfig struct {
 }
 
 type SwitchContext struct {
-	MacOSNetworkLocation string                `yaml:"mac_network_location" mapstructure:"mac_network_location"`
-	DNS                  ContextDNSConfig      `yaml:"dns" mapstructure:"dns"`
-	UnboundForwarders    []string              `yaml:"unbound_forwarders" mapstructure:"unbound_forwarders"`
-	ProxyMode            string                `yaml:"proxy_mode" mapstructure:"proxy_mode"`
-	ForwarderProxy       *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
-	Alpaca               *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
-	Apps                 LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
+	MacOSNetworkLocation string           `yaml:"mac_network_location" mapstructure:"mac_network_location"`
+	DNS                  ContextDNSConfig `yaml:"dns" mapstructure:"dns"`
+	Upstreams            []string         `yaml:"upstreams" mapstructure:"upstreams"`
+	// Rejected on load rather than ignored. This was unbound_forwarders, and
+	// the same list now drives AdGuard Home's upstream_dns_file - a context
+	// still carrying the old key would switch networks without changing a
+	// single upstream, and nothing would say so.
+	UnboundForwardersRemoved []string              `yaml:"unbound_forwarders,omitempty" mapstructure:"unbound_forwarders"`
+	ProxyMode                string                `yaml:"proxy_mode" mapstructure:"proxy_mode"`
+	ForwarderProxy           *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
+	Alpaca                   *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
+	Apps                     LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
 }
 
 type DNSConfig struct {
@@ -69,18 +73,13 @@ type ApplicationCommands struct {
 	Reload  []string `yaml:"reload,omitempty" mapstructure:"reload"`
 }
 
-type UnboundConfig struct {
-	ForwardersFile string `yaml:"forwarders_file" mapstructure:"forwarders_file"`
-}
-
-// AdGuardConfig points at AdGuard Home's upstream_dns_file, the equivalent of
-// unbound's forwarders.conf. Leave UpstreamsFile empty and macswitcher ignores
-// AdGuard Home entirely, which is what every machine that has not opted into
-// the trial wants.
+// AdGuardConfig points at AdGuard Home's upstream_dns_file, which a context's
+// Upstreams are written into on every switch. Leave UpstreamsFile empty and
+// macswitcher does not touch it.
 //
-// A context's UnboundForwarders drive both files: they are the same decision
-// ("which upstream resolvers does this network want"), just written in two
-// syntaxes.
+// The per-domain "[/zone/]address" lines in that file belong to whoever put
+// them there and are carried over untouched; only the default upstreams are
+// macswitcher's.
 type AdGuardConfig struct {
 	UpstreamsFile string `yaml:"upstreams_file" mapstructure:"upstreams_file"`
 }
@@ -109,7 +108,6 @@ type DaemonConfig struct {
 // DaemonsConfig lists the external daemons `macswitcher observe` can show,
 // beyond macswitcher's own Alpaca launch agent (always shown).
 type DaemonsConfig struct {
-	Unbound           DaemonConfig `yaml:"unbound" mapstructure:"unbound"`
 	AdGuardHome       DaemonConfig `yaml:"adguardhome" mapstructure:"adguardhome"`
 	Container         DaemonConfig `yaml:"container" mapstructure:"container"`
 	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
@@ -141,11 +139,9 @@ const (
 // Names of the managed applications macswitcher knows about by name, as used
 // as keys in the `applications:` map.
 const (
-	appAlpaca  = "alpaca"
-	appUnbound = "unbound"
-	// appAdGuard is AdGuard Home, on trial as unbound's replacement. Both can
-	// run at once (unbound on 127.0.0.2, AdGuard Home on 127.0.0.3), so a
-	// context switch feeds whichever of them is configured.
+	appAlpaca = "alpaca"
+	// appAdGuard is AdGuard Home, the resolver this machine runs. A context
+	// switch rewrites its default upstreams and restarts it.
 	appAdGuard = "adguardhome"
 	// appContainer is Apple's container runtime, which kiac builds its cluster
 	// node VMs on. Watched rather than driven: macswitcher never starts or
@@ -153,15 +149,16 @@ const (
 	appContainer = "container"
 )
 
-// Loopback addresses. mDNSResponder owns 127.0.0.1:53, so unbound listens on
-// 127.0.0.2 instead - see the unbound notes in MacbookSetup/Setup.md.
+// Loopback addresses. mDNSResponder owns 127.0.0.1:53, so the local resolver
+// listens on another loopback alias - AdGuard Home uses 127.0.0.3 for both DNS
+// and its web UI. The aliases are created at boot by com.schretzi.localhost-alias
+// (MacbookSetup's localhost_alias role); see MacbookSetup/Setup.md -> DNS.
 //
-// AdGuard Home's 127.0.0.3 is deliberately not a constant here: nothing in
-// this package binds it, because it is reached only by pointing
-// dns.local_resolver at it in config.yaml while AdGuard Home is on trial.
+// This is only the default written into a fresh config. A machine pointing
+// somewhere else sets dns.local_resolver.
 const (
 	loopbackLocal    = "127.0.0.1"
-	loopbackResolver = "127.0.0.2"
+	loopbackResolver = "127.0.0.3"
 )
 
 // contextHome is the context `config init` seeds and falls back to.
@@ -251,7 +248,6 @@ func initConfig(path string) error {
 				ProxyMode:            "direct",
 				Apps: LifecycleConfig{
 					Restart: []string{"docker"},
-					Reload:  []string{appUnbound},
 				},
 			},
 			"work": {},
@@ -260,17 +256,10 @@ func initConfig(path string) error {
 		DNS: DNSConfig{
 			LocalResolver: loopbackResolver,
 		},
-		Unbound: UnboundConfig{
-			ForwardersFile: "/opt/homebrew/etc/unbound/conf.d/forwarders.conf",
+		AdGuard: AdGuardConfig{
+			UpstreamsFile: "/etc/adguardhome/upstreams.conf",
 		},
-		// Empty on purpose: AdGuard Home is opt-in while it is on trial. Set
-		// upstreams_file (and daemons.adguardhome.label) to bring it in.
-		AdGuard: AdGuardConfig{},
 		Applications: map[string]ApplicationCommands{
-			appUnbound: {
-				Reload:  []string{"unbound-control", actionReload},
-				Restart: []string{"sudo", "launchctl", "kickstart", "-k", "system/net.unbound"},
-			},
 			"docker": {
 				Start:   []string{"open", "-a", "Docker"},
 				Stop:    []string{"osascript", "-e", `tell application "Docker" to quit`},
@@ -283,7 +272,7 @@ func initConfig(path string) error {
 		},
 	}
 	homeContext := cfg.Contexts[contextHome]
-	homeContext.UnboundForwarders = currentUnboundForwarders(cfg.Unbound.ForwardersFile)
+	homeContext.Upstreams, _, _ = currentAdGuardUpstreams(cfg.AdGuard.UpstreamsFile)
 	cfg.Contexts[contextHome] = homeContext
 	if err := saveConfig(path, cfg); err != nil {
 		return err
@@ -367,25 +356,6 @@ func currentAdGuardUpstreams(path string) (defaults, specific []string, err erro
 	return defaults, specific, nil
 }
 
-func currentUnboundForwarders(path string) []string {
-	b, err := os.ReadFile(path) // #nosec G304 -- path is the configured Unbound forwarders file, an operator-controlled setting
-	if err != nil {
-		return nil
-	}
-	var forwarders []string
-	for line := range strings.SplitSeq(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "forward-addr:") {
-			continue
-		}
-		forwarder := strings.TrimSpace(strings.TrimPrefix(line, "forward-addr:"))
-		if forwarder != "" {
-			forwarders = append(forwarders, forwarder)
-		}
-	}
-	return forwarders
-}
-
 func loadConfig(path string) (Config, error) { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 	cfg, err := readConfigFile(path)
 	if err != nil {
@@ -417,14 +387,21 @@ func loadConfig(path string) (Config, error) { //nolint:gocyclo // TODO: split t
 	if len(cfg.Contexts) == 0 {
 		return cfg, errors.New("no context files found")
 	}
+	// Loudly, not silently. unbound is gone and the same list drives AdGuard
+	// Home's upstream_dns_file now, so a context left on the old key would
+	// switch networks without changing a single upstream - working, quiet, and
+	// forwarding to the previous network's resolvers.
+	for name, context := range cfg.Contexts {
+		if len(context.UnboundForwardersRemoved) > 0 {
+			return cfg, fmt.Errorf(
+				"contexts.%s still uses unbound_forwarders; rename the key to upstreams "+
+					"(unbound has been replaced by AdGuard Home, and the same list is now "+
+					"written to its upstream_dns_file)", name,
+			)
+		}
+	}
 	if cfg.DNS.LocalResolver == "" {
 		cfg.DNS.LocalResolver = loopbackResolver
-	}
-	if cfg.Unbound.ForwardersFile == "" {
-		cfg.Unbound.ForwardersFile = "/opt/homebrew/etc/unbound/conf.d/forwarders.conf"
-	}
-	if cfg.Daemons.Unbound.Label == "" {
-		cfg.Daemons.Unbound.Label = "homebrew.mxcl.unbound"
 	}
 	if cfg.LocalProxy.Host == "" || cfg.LocalProxy.Port <= 0 {
 		return cfg, errors.New("invalid local_proxy values")

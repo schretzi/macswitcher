@@ -464,7 +464,6 @@ func vpnInterfaceStatus(iface string) (up bool, detail string) {
 
 var (
 	knownDaemonKeys = map[string]bool{
-		appUnbound:            true,
 		appAdGuard:            true,
 		appContainer:          true,
 		"kerberos_keep_alive": true,

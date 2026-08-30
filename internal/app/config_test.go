@@ -30,19 +30,13 @@ func TestInitConfigCreatesGlobalAndContextFiles(t *testing.T) {
 		t.Fatalf("default resolver = %q, want %q", got, loopbackResolver)
 	}
 	if got := cfg.Contexts[contextHome].DNS.Resolvers; len(got) != 1 || got[0] != loopbackResolver {
-		t.Fatalf("home resolvers = %#v, want [127.0.0.2]", got)
+		t.Fatalf("home resolvers = %#v, want the loopback resolver", got)
 	}
 	if len(cfg.Alpaca.Command) == 0 {
 		t.Fatal("global Alpaca command is empty")
 	}
-	if got := cfg.Applications[appUnbound].Reload; len(got) != 2 || got[0] != "unbound-control" || got[1] != actionReload {
-		t.Fatalf("unbound reload command = %#v, want unbound-control reload", got)
-	}
-	if got := cfg.Applications[appUnbound].Restart; strings.Join(got, " ") != "sudo launchctl kickstart -k system/net.unbound" {
-		t.Fatalf("unbound restart command = %#v, want LaunchDaemon kickstart", got)
-	}
-	if got := cfg.Contexts[contextHome].Apps.Reload; len(got) != 1 || got[0] != appUnbound {
-		t.Fatalf("home reload applications = %#v, want [unbound]", got)
+	if got := cfg.AdGuard.UpstreamsFile; got != "/etc/adguardhome/upstreams.conf" {
+		t.Fatalf("default adguard upstreams file = %q", got)
 	}
 	if got := strings.Join(cfg.LocalProxy.NoProxy, ","); !strings.Contains(got, "kubernetes") {
 		t.Fatalf("default no_proxy = %q, want kubernetes", got)
@@ -107,52 +101,6 @@ func TestBuildProxyCommandUsesInstalledAlpacaPath(t *testing.T) {
 	}
 }
 
-func TestWriteUnboundForwardersReplacesSymlink(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	target := filepath.Join(root, "repository-forwarders.conf")
-	forwardersFile := filepath.Join(root, "conf.d", "forwarders.conf")
-	targetContent := "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.1\n"
-	if err := os.WriteFile(target, []byte(targetContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(forwardersFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, forwardersFile); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := Config{Unbound: UnboundConfig{ForwardersFile: forwardersFile}}
-	if err := writeUnboundForwarders(cfg, []string{"198.51.100.53"}); err != nil {
-		t.Fatalf("writeUnboundForwarders() error = %v", err)
-	}
-
-	gotTarget, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(gotTarget) != targetContent {
-		t.Fatalf("symlink target changed: got %q, want %q", gotTarget, targetContent)
-	}
-	info, err := os.Lstat(forwardersFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("forwarders file is still a symlink")
-	}
-	got, err := os.ReadFile(forwardersFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(got), "forward-addr: 198.51.100.53") {
-		t.Fatalf("forwarders file does not contain selected resolver: %q", got)
-	}
-}
-
 func TestRunApplicationActionFallsBackToStopAndStart(t *testing.T) {
 	t.Parallel()
 
@@ -183,5 +131,32 @@ func TestRunApplicationActionFallsBackToStopAndStart(t *testing.T) {
 				t.Fatalf("action order = %q, want %q", got, "stopstart")
 			}
 		})
+	}
+}
+
+// The rename from unbound_forwarders to upstreams has to fail loudly: a
+// context left on the old key would switch networks and change no upstream at
+// all, which looks exactly like a working switch.
+func TestLoadConfigRejectsRenamedUnboundForwardersKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "contexts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("current_context: home\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "unbound_forwarders:\n  - 192.0.2.1\n"
+	if err := os.WriteFile(filepath.Join(dir, "contexts", "home.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadConfig(filepath.Join(dir, "config.yaml"))
+	if err == nil {
+		t.Fatal("loadConfig() accepted the removed unbound_forwarders key")
+	}
+	if !strings.Contains(err.Error(), "upstreams") {
+		t.Fatalf("error does not name the new key: %v", err)
 	}
 }

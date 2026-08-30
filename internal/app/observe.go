@@ -14,7 +14,6 @@ type daemonKind int
 
 const (
 	daemonKindAlpaca daemonKind = iota
-	daemonKindUnbound
 	daemonKindAdGuard
 	daemonKindContainer
 	daemonKindKerberos
@@ -68,10 +67,6 @@ func newObserveModel(cfg Config) observeModel {
 		// rather than from config: it is not something the user can point
 		// elsewhere.
 		{name: appAlpaca, configKey: "", label: launchAgentService().Label(), scope: daemonScopeUser, kind: daemonKindAlpaca},
-		{name: appUnbound, configKey: appUnbound, label: cfg.Daemons.Unbound.Label, scope: cfg.Daemons.Unbound.Scope, kind: daemonKindUnbound},
-		// AdGuard Home sits directly under unbound: while it is on trial the
-		// two answer the same questions on different loopback addresses, and
-		// the point of the row is being able to see them side by side.
 		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons.AdGuardHome.Label, scope: cfg.Daemons.AdGuardHome.Scope, kind: daemonKindAdGuard},
 		// apple/container + kiac: the cluster VMs take their DNS from the vmnet
 		// gateway, so this belongs next to the resolvers rather than at the end.
@@ -129,8 +124,6 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 	switch row.kind {
 	case daemonKindAlpaca:
 		return alpacaDetail(cfg)
-	case daemonKindUnbound:
-		return unboundDetail(cfg)
 	case daemonKindAdGuard:
 		return adguardDetail(cfg)
 	case daemonKindContainer:
@@ -176,18 +169,10 @@ func alpacaDetail(cfg Config) []string {
 	return lines
 }
 
-func unboundDetail(cfg Config) []string {
-	forwarders := currentUnboundForwarders(cfg.Unbound.ForwardersFile)
-	if len(forwarders) == 0 {
-		return []string{"no forward-addr entries in " + cfg.Unbound.ForwardersFile}
-	}
-	return []string{"forwarders: " + strings.Join(forwarders, ", ")}
-}
-
 // adguardDetail shows what AdGuard Home is actually forwarding to, split into
 // the default upstreams macswitcher owns and the per-domain ones generated
-// from unbound's forward-zones - the distinction that matters when the
-// intranet stops resolving after a context switch.
+// and the per-domain ones an overlay contributes - the distinction that
+// matters when the intranet stops resolving after a context switch.
 func adguardDetail(cfg Config) []string {
 	path := strings.TrimSpace(cfg.AdGuard.UpstreamsFile)
 	if path == "" {

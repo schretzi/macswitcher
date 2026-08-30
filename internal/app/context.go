@@ -34,19 +34,17 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 			fmt.Printf("warning: could not switch macOS network location: %v\n", err)
 		}
 	}
-	if len(ctx.UnboundForwarders) > 0 {
-		if err := writeUnboundForwarders(cfg, ctx.UnboundForwarders); err != nil {
+	if len(ctx.Upstreams) > 0 {
+		if err := syncAdGuardUpstreams(cfg, ctx.Upstreams, selected); err != nil {
 			return err
 		}
-		restartUnboundIfConfigured(cfg)
-		syncAdGuardUpstreams(cfg, ctx.UnboundForwarders, selected)
 	}
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err
 	}
 	flushDNSCache()
 	if err := checkDNSResolution(ctx); err != nil {
-		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check unbound, VPN, network location) and rerun `macswitcher switch %s`", err, selected)
+		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`", err, selected)
 	}
 	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 		if err := unsetLocalProxy(cfgPath); err != nil {
@@ -70,21 +68,24 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 	return nil
 }
 
-// syncAdGuardUpstreams writes the context's forwarders a second time, in
-// AdGuard Home's syntax, while it is on trial next to unbound.
+// syncAdGuardUpstreams points AdGuard Home at the upstream resolvers this
+// context wants. Skipped entirely unless adguard.upstreams_file is set.
 //
-// It is skipped entirely unless adguard.upstreams_file is set, and it is
-// never fatal: unbound is still the resolver the machine points at, so a
-// failure here must not abort a switch that otherwise succeeded.
-func syncAdGuardUpstreams(cfg Config, forwarders []string, selected string) {
+// Failing here aborts the switch. It used to be a warning, on the grounds
+// that unbound was still the resolver the machine pointed at - that is no
+// longer true, AdGuard Home is the only one. A failed write leaves it
+// forwarding to the *previous* network's resolvers, and checkDNSResolution
+// will not catch that: public names still resolve through the old upstreams,
+// so the switch looks like it worked and only the intranet is gone.
+func syncAdGuardUpstreams(cfg Config, forwarders []string, selected string) error {
 	if strings.TrimSpace(cfg.AdGuard.UpstreamsFile) == "" {
-		return
+		return nil
 	}
 	if err := writeAdGuardUpstreams(cfg, forwarders, selected); err != nil {
-		fmt.Printf("warning: could not write AdGuard Home upstreams: %v\n", err)
-		return
+		return fmt.Errorf("write AdGuard Home upstreams: %w", err)
 	}
 	restartAdGuardIfConfigured(cfg)
+	return nil
 }
 
 func status(cfgPath string) error {
@@ -100,7 +101,7 @@ func status(cfgPath string) error {
 	fmt.Printf("proxy_mode: %s\n", ctx.ProxyMode)
 	fmt.Printf("local_proxy: %s\n", proxyURL)
 	fmt.Printf("local_resolver: %s\n", cfg.DNS.LocalResolver)
-	fmt.Printf("unbound_forwarders_file: %s\n", cfg.Unbound.ForwardersFile)
+	fmt.Printf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
 	fmt.Printf("no_proxy: %s\n", noProxy)
 	fmt.Printf("network_services configured: %d (0 means auto-detect)\n", len(cfg.NetworkServices))
 	fmt.Println("service:")
@@ -155,8 +156,8 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 				warnings = append(warnings, fmt.Sprintf("contexts.%s.forwarder_proxy.pac_file uses HTTP; keep auth_allowlist strict to reduce PAC tampering impact", name))
 			}
 		}
-		if len(ctx.UnboundForwarders) == 0 {
-			warnings = append(warnings, fmt.Sprintf("contexts.%s.unbound_forwarders is empty", name))
+		if len(ctx.Upstreams) == 0 {
+			warnings = append(warnings, fmt.Sprintf("contexts.%s.upstreams is empty", name))
 		}
 		validateApplicationReferences(cfg, name, ctx.Apps, &warnings, &critical)
 	}
@@ -248,7 +249,7 @@ func isEmptyContext(ctx SwitchContext) bool {
 	return ctx.MacOSNetworkLocation == "" &&
 		len(ctx.DNS.NetworkServices) == 0 &&
 		len(ctx.DNS.Resolvers) == 0 &&
-		len(ctx.UnboundForwarders) == 0 &&
+		len(ctx.Upstreams) == 0 &&
 		ctx.ProxyMode == "" &&
 		ctx.ForwarderProxy == nil &&
 		ctx.Alpaca == nil &&
