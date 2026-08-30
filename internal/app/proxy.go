@@ -272,6 +272,20 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 			return nil, err
 		}
 	}
+	// The filter proxy, in direct contexts: alpaca's only way to name an
+	// upstream is a PAC file, so enabling filter_proxy means generating one
+	// and letting it fill the same {{pac_file}} placeholder a forward context
+	// fills with the corporate PAC. The two can never collide - one is
+	// direct-only, the other forward-only.
+	pacFile := forwarder.PacFile
+	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && filterProxyAppliesTo(cfg, ctx) {
+		generated, err := writeFilterPAC(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("generate filter proxy PAC: %w", err)
+		}
+		pacFile = "file://" + generated
+	}
+
 	authAllowlist := strings.Join(forwarder.AuthAllowlist, ",")
 	ticketFile := strings.TrimSpace(forwarder.TicketFile)
 	upstreamProxy := ""
@@ -286,7 +300,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 		"{{proxy_port}}":     strconv.Itoa(forwarder.Port),
 		"{{username}}":       forwarder.Username,
 		"{{password}}":       password,
-		placeholderPACFile:   forwarder.PacFile,
+		placeholderPACFile:   pacFile,
 		"{{upstream_url}}":   upstreamURL,
 		"{{auth_allowlist}}": authAllowlist,
 		"{{ticket_file}}":    ticketFile,
@@ -295,7 +309,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	out := make([]string, 0, len(command))
 	for i := 0; i < len(command); i++ {
 		arg := command[i]
-		if arg == "-C" && i+1 < len(command) && command[i+1] == placeholderPACFile && forwarder.PacFile == "" {
+		if arg == "-C" && i+1 < len(command) && command[i+1] == placeholderPACFile && pacFile == "" {
 			i++
 			continue
 		}

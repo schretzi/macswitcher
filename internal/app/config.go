@@ -19,6 +19,7 @@ type Config struct {
 	NetworkServices []string                       `yaml:"network_services" mapstructure:"network_services"`
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
 	AdGuard         AdGuardConfig                  `yaml:"adguard" mapstructure:"adguard"`
+	FilterProxy     FilterProxyConfig              `yaml:"filter_proxy" mapstructure:"filter_proxy"`
 	Daemons         DaemonsConfig                  `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
 	Contexts        map[string]SwitchContext       `yaml:"-" mapstructure:"-"`
@@ -28,6 +29,28 @@ type LocalProxyConfig struct {
 	Host    string   `yaml:"host" mapstructure:"host"`
 	Port    int      `yaml:"port" mapstructure:"port"`
 	NoProxy []string `yaml:"no_proxy" mapstructure:"no_proxy"`
+}
+
+// FilterProxyConfig is the local URL-filtering proxy alpaca forwards to in
+// direct contexts - privoxy on this machine. See internal/app/filterproxy.go
+// for why enabling it means generating a PAC file.
+type FilterProxyConfig struct {
+	Enabled bool   `yaml:"enabled" mapstructure:"enabled"`
+	Host    string `yaml:"host" mapstructure:"host"`
+	Port    int    `yaml:"port" mapstructure:"port"`
+	// FailOpen adds a DIRECT fallback to the generated PAC, so a filter that
+	// is not listening costs filtering rather than connectivity. The honest
+	// trade either way: fail-open browses unfiltered without saying so (which
+	// is what `macswitcher status` is for), fail-closed takes the network
+	// down with the filter.
+	FailOpen bool `yaml:"fail_open" mapstructure:"fail_open"`
+	// Direct names hosts and domains that bypass the filter, on top of
+	// local_proxy.no_proxy. A leading dot matches subdomains.
+	Direct []string `yaml:"direct,omitempty" mapstructure:"direct"`
+	// PACFile overrides where the generated PAC is written. Empty means
+	// ~/.local/state/macswitcher/filter.pac - it is generated state, not
+	// something to edit.
+	PACFile string `yaml:"pac_file,omitempty" mapstructure:"pac_file"`
 }
 
 type SwitchContext struct {
@@ -114,6 +137,7 @@ type DaemonsConfig struct {
 	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
 	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
 	Tunneling         DaemonConfig `yaml:"tunneling" mapstructure:"tunneling"`
+	Privoxy           DaemonConfig `yaml:"privoxy" mapstructure:"privoxy"`
 }
 
 type ForwarderProxyConfig struct {
@@ -147,7 +171,15 @@ const (
 	// node VMs on. Watched rather than driven: macswitcher never starts or
 	// stops it, but a context switch is a common moment for it to be down.
 	appContainer = "container"
+	// appPrivoxy is the filtering proxy alpaca forwards to in direct
+	// contexts. Like appContainer it is watched, not driven - but unlike it,
+	// its absence is invisible without help: the generated PAC fails open, so
+	// a filter that is down looks exactly like normal browsing.
+	appPrivoxy = "privoxy"
 )
+
+// defaultFilterProxyPort is privoxy's own default listen port.
+const defaultFilterProxyPort = 8118
 
 // Loopback addresses. mDNSResponder owns 127.0.0.1:53, so the local resolver
 // listens on another loopback alias - AdGuard Home uses 127.0.0.3 for both DNS
@@ -240,6 +272,15 @@ func initConfig(path string) error {
 		Alpaca: AlpacaConfig{
 			Enabled: true,
 			Command: []string{appAlpaca, "-l", placeholderLocalHost, "-p", placeholderLocalPort, "-C", placeholderPACFile},
+		},
+		// Off by default: it needs a filtering proxy actually listening on
+		// the port, and a machine without one would otherwise generate a PAC
+		// pointing at nothing.
+		FilterProxy: FilterProxyConfig{
+			Enabled:  false,
+			Host:     loopbackLocal,
+			Port:     defaultFilterProxyPort,
+			FailOpen: true,
 		},
 		Contexts: map[string]SwitchContext{
 			contextHome: {

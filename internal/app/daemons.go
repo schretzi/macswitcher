@@ -466,6 +466,7 @@ var (
 	knownDaemonKeys = map[string]bool{
 		appAdGuard:            true,
 		appContainer:          true,
+		appPrivoxy:            true,
 		"kerberos_keep_alive": true,
 		"omt":                 true,
 		"vpn":                 true,

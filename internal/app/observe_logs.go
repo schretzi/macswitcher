@@ -77,8 +77,19 @@ func daemonLogSources(row daemonRow) []logSource {
 	}
 	mainPath := plistString(plistPath, "StandardOutPath")
 	errPath := plistString(plistPath, "StandardErrorPath")
+	// /dev/null is a job saying it writes nothing there, not a log file.
+	if mainPath == os.DevNull {
+		mainPath = ""
+	}
 	if mainPath == "" {
 		mainPath = deriveMainLogPath(errPath)
+	}
+	// A job whose stderr path is not <name>.err.log has only one log, and
+	// this is it - privoxy is the case: its own `logfile` directive works
+	// only when it daemonises, so under launchd everything it says arrives
+	// on stderr. Showing that as the "err" log would hide the main one.
+	if mainPath == "" && errPath != "" {
+		mainPath, errPath = errPath, ""
 	}
 	var sources []logSource
 	if mainPath != "" {

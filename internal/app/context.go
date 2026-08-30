@@ -100,6 +100,7 @@ func status(cfgPath string) error {
 	fmt.Printf("macos_network_location: %s\n", ctx.MacOSNetworkLocation)
 	fmt.Printf("proxy_mode: %s\n", ctx.ProxyMode)
 	fmt.Printf("local_proxy: %s\n", proxyURL)
+	fmt.Printf("filter_proxy: %s\n", filterProxyStatusLine(cfg, ctx))
 	fmt.Printf("local_resolver: %s\n", cfg.DNS.LocalResolver)
 	fmt.Printf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
 	fmt.Printf("no_proxy: %s\n", noProxy)
@@ -159,10 +160,30 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 		if len(ctx.Upstreams) == 0 {
 			warnings = append(warnings, fmt.Sprintf("contexts.%s.upstreams is empty", name))
 		}
+		// The wiring this replaced: a context that names its own PAC through
+		// alpaca.command still works, but filter_proxy will not fill the
+		// placeholder it never sees - so the two silently disagree about
+		// which PAC alpaca ends up with.
+		if cfg.FilterProxy.Enabled && ctx.Alpaca != nil && commandNamesPAC(ctx.Alpaca.Command) {
+			warnings = append(warnings, fmt.Sprintf(
+				"contexts.%s.alpaca.command names its own PAC (-C) while filter_proxy is enabled; "+
+					"drop the override and let filter_proxy generate it", name,
+			))
+		}
 		validateApplicationReferences(cfg, name, ctx.Apps, &warnings, &critical)
 	}
 
 	ctx := cfg.Contexts[cfg.CurrentContext]
+	// Checked against the port, not against the config: a filter_proxy block
+	// that describes a proxy nobody is running is exactly the state the
+	// fail-open PAC hides.
+	if filterProxyAppliesTo(cfg, ctx) && !filterProxyListening(cfg) {
+		warnings = append(warnings, fmt.Sprintf(
+			"filter_proxy is in the path for context %q but nothing is listening on %s%s",
+			cfg.CurrentContext, filterProxyAddr(cfg),
+			map[bool]string{true: " - traffic goes out unfiltered (fail_open)", false: " - requests will fail"}[cfg.FilterProxy.FailOpen],
+		))
+	}
 	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) == "" {
 		account := ctx.ForwarderProxy.PasswordKeychainAccount
 		if strings.TrimSpace(account) == "" {

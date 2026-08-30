@@ -20,6 +20,7 @@ const (
 	daemonKindOMT
 	daemonKindVPN
 	daemonKindTunneling
+	daemonKindPrivoxy
 )
 
 // daemonRow is one line of the observe TUI: a launchd agent plus the
@@ -71,6 +72,9 @@ func newObserveModel(cfg Config) observeModel {
 		// apple/container + kiac: the cluster VMs take their DNS from the vmnet
 		// gateway, so this belongs next to the resolvers rather than at the end.
 		{name: appContainer, configKey: appContainer, label: cfg.Daemons.Container.Label, scope: cfg.Daemons.Container.Scope, kind: daemonKindContainer},
+		// directly after alpaca: it is the hop alpaca forwards to in direct
+		// contexts, and the pair is only meaningful read together.
+		{name: appPrivoxy, configKey: appPrivoxy, label: cfg.Daemons.Privoxy.Label, scope: cfg.Daemons.Privoxy.Scope, kind: daemonKindPrivoxy},
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
 		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
@@ -124,6 +128,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 	switch row.kind {
 	case daemonKindAlpaca:
 		return alpacaDetail(cfg)
+	case daemonKindPrivoxy:
+		return privoxyDetail(cfg)
 	case daemonKindAdGuard:
 		return adguardDetail(cfg)
 	case daemonKindContainer:
