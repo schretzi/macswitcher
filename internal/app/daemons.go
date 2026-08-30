@@ -469,7 +469,7 @@ var (
 		appPrivoxy:            true,
 		"kerberos_keep_alive": true,
 		"omt":                 true,
-		"vpn":                 true,
+		appVPN:                true,
 		"tunneling":           true,
 	}
 	knownDaemonFields = map[string]bool{"label": true, "scope": true, "interface": true}

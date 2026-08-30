@@ -32,10 +32,10 @@ func updateZshProxy(proxyURL, noProxy string, enable bool) error {
 		port = u.Port()
 	}
 	if noProxy == "" {
-		noProxy = "localhost,127.0.0.1,::1"
+		noProxy = "localhost," + loopbackLocal + "," + loopbackIPv6
 	}
 
-	state := "off"
+	state := ProxyModeOff
 	if enable {
 		state = "on"
 	}

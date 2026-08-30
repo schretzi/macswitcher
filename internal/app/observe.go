@@ -77,7 +77,7 @@ func newObserveModel(cfg Config) observeModel {
 		{name: appPrivoxy, configKey: appPrivoxy, label: cfg.Daemons.Privoxy.Label, scope: cfg.Daemons.Privoxy.Scope, kind: daemonKindPrivoxy},
 		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
 		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
-		{name: "vpn", configKey: "vpn", label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
+		{name: appVPN, configKey: appVPN, label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
 		// last: its gcp tunnels ride on whatever the rows above have set up
 		// (proxy, resolver, VPN), so a failure here is usually a symptom of
 		// one of them.

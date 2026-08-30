@@ -51,6 +51,10 @@ const (
 	minViewportHeight = 3
 )
 
+// followOff is the log viewer's follow toggle, not a proxy state - it only
+// happens to share the word with ProxyModeOff.
+const followOff = "off"
+
 func (m observeModel) View() string {
 	if m.quitting {
 		return ""
@@ -186,7 +190,7 @@ func (m observeModel) logModalView() string {
 		b.WriteString(m.logs.viewport.View())
 	}
 
-	followState := "off"
+	followState := followOff
 	if m.logs.follow {
 		followState = styleFollowOn.Render("on")
 	}

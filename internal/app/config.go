@@ -176,6 +176,9 @@ const (
 	// its absence is invisible without help: the generated PAC fails open, so
 	// a filter that is down looks exactly like normal browsing.
 	appPrivoxy = "privoxy"
+	// appVPN is the employer VPN agent. Watched only - macswitcher never
+	// dials it, but a context switch is a common moment for it to matter.
+	appVPN = "vpn"
 )
 
 // defaultFilterProxyPort is privoxy's own default listen port.
@@ -191,6 +194,9 @@ const defaultFilterProxyPort = 8118
 const (
 	loopbackLocal    = "127.0.0.1"
 	loopbackResolver = "127.0.0.3"
+	// loopbackIPv6 appears in every no_proxy list and in the generated PAC's
+	// direct rules.
+	loopbackIPv6 = "::1"
 )
 
 // contextHome is the context `config init` seeds and falls back to.
@@ -267,7 +273,7 @@ func initConfig(path string) error {
 		LocalProxy: LocalProxyConfig{
 			Host:    loopbackLocal,
 			Port:    3128,
-			NoProxy: []string{"localhost", loopbackLocal, "::1", "kubernetes"},
+			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, "kubernetes"},
 		},
 		Alpaca: AlpacaConfig{
 			Enabled: true,

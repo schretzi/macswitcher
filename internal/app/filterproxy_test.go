@@ -13,7 +13,7 @@ func filterProxyTestConfig() Config {
 		LocalProxy: LocalProxyConfig{
 			Host:    loopbackLocal,
 			Port:    3128,
-			NoProxy: []string{"localhost", loopbackLocal, "::1", "kubernetes", "kiac"},
+			NoProxy: []string{"localhost", loopbackLocal, loopbackIPv6, "kubernetes", "kiac"},
 		},
 		FilterProxy: FilterProxyConfig{
 			Enabled:  true,
@@ -120,7 +120,7 @@ func TestFilterProxyDirectHostsDeduplicates(t *testing.T) {
 		}
 	}
 	// Loopback is handled numerically further down the generated PAC.
-	for _, unwanted := range []string{loopbackLocal, "::1"} {
+	for _, unwanted := range []string{loopbackLocal, loopbackIPv6} {
 		if seen[unwanted] > 0 {
 			t.Errorf("%q should not be emitted as a named direct host: %#v", unwanted, hosts)
 		}

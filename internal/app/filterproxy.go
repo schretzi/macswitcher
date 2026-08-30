@@ -94,7 +94,7 @@ func filterProxyDirectHosts(cfg Config) []string {
 			// Literal loopback and IPv6 loopback are handled numerically in
 			// the generated PAC; carrying them here too would only produce
 			// two rules that say the same thing.
-			if entry == "" || entry == "127.0.0.1" || entry == "::1" || seen[entry] {
+			if entry == "" || entry == loopbackLocal || entry == loopbackIPv6 || seen[entry] {
 				continue
 			}
 			seen[entry] = true
