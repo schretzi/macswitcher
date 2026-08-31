@@ -277,6 +277,57 @@ func omtInstalled() bool {
 	return err == nil
 }
 
+func lsrulesInstalled() bool {
+	_, err := exec.LookPath(appLsrules)
+	return err == nil
+}
+
+// lsrulesStatus is the subset of `lsrules status --json` this needs.
+//
+// JSON rather than the human output, for the same reason as tunneling: the
+// wording is presentation and moves, and scraping it has broken here before.
+type lsrulesStatus struct {
+	BaseURL     string   `json:"baseUrl"`
+	RuleGroups  []string `json:"ruleGroups"`
+	Listening   bool     `json:"listening"`
+	TLSOK       bool     `json:"tlsOk"`
+	TLSError    string   `json:"tlsError"`
+	Certificate struct {
+		Issuer    string `json:"issuer"`
+		ExpiresIn int    `json:"expiresInDays"`
+	} `json:"certificate"`
+	CertificateError string `json:"certificateError"`
+}
+
+func lsrulesServeStatus() (lsrulesStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	// #nosec G204 -- fixed binary name resolved from PATH, fixed arguments.
+	cmd := exec.CommandContext(ctx, appLsrules, "status", "--json")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, runErr := cmd.Output()
+
+	if ctx.Err() != nil {
+		return lsrulesStatus{}, fmt.Errorf("lsrules status timed out after %s: %w", commandTimeout, ctx.Err())
+	}
+	if len(bytes.TrimSpace(stdout)) == 0 {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return lsrulesStatus{}, errors.New(detail)
+		}
+		if runErr != nil {
+			return lsrulesStatus{}, fmt.Errorf("lsrules status: %w", runErr)
+		}
+		return lsrulesStatus{}, errors.New("lsrules status produced no output")
+	}
+	var st lsrulesStatus
+	if err := json.Unmarshal(stdout, &st); err != nil {
+		return lsrulesStatus{}, fmt.Errorf("parsing lsrules status: %w", err)
+	}
+	return st, nil
+}
+
 func tunnelingInstalled() bool {
 	_, err := exec.LookPath("tunneling")
 	return err == nil
@@ -467,6 +518,7 @@ var (
 		appAdGuard:            true,
 		appContainer:          true,
 		appPrivoxy:            true,
+		appLsrules:            true,
 		"kerberos_keep_alive": true,
 		"omt":                 true,
 		appVPN:                true,

@@ -233,3 +233,23 @@ func TestCommandNamesPACMatchesTheFlagNotAnySubstring(t *testing.T) {
 		t.Error("matched -C inside a path")
 	}
 }
+
+// The lsrules row exists because the failure it reports is invisible from the
+// subscription side: Little Snitch keeps the rules it already downloaded, so a
+// server that stopped serving looks exactly like one that works.
+func TestLsrulesDetailReportsAMissingBinaryPlainly(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	lines := lsrulesDetail()
+	if len(lines) != 1 || !strings.Contains(lines[0], "not found on PATH") {
+		t.Errorf("lsrulesDetail() = %#v, want a single 'not found on PATH' line", lines)
+	}
+}
+
+func TestLsrulesIsARecognisedDaemonKey(t *testing.T) {
+	t.Parallel()
+
+	if !knownDaemonKeys[appLsrules] {
+		t.Errorf("daemons.%s would be reported as a typo by config validate", appLsrules)
+	}
+}

@@ -138,6 +138,7 @@ type DaemonsConfig struct {
 	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
 	Tunneling         DaemonConfig `yaml:"tunneling" mapstructure:"tunneling"`
 	Privoxy           DaemonConfig `yaml:"privoxy" mapstructure:"privoxy"`
+	Lsrules           DaemonConfig `yaml:"lsrules" mapstructure:"lsrules"`
 }
 
 type ForwarderProxyConfig struct {
@@ -179,6 +180,11 @@ const (
 	// appVPN is the employer VPN agent. Watched only - macswitcher never
 	// dials it, but a context switch is a common moment for it to matter.
 	appVPN = "vpn"
+	// appLsrules serves the Little Snitch rule groups over HTTPS. Watched,
+	// not driven - but its failure mode is quiet: Little Snitch keeps the
+	// rules it already has, so a subscription that stopped refreshing looks
+	// exactly like one that is working.
+	appLsrules = "lsrules"
 )
 
 // defaultFilterProxyPort is privoxy's own default listen port.

@@ -21,6 +21,7 @@ const (
 	daemonKindVPN
 	daemonKindTunneling
 	daemonKindPrivoxy
+	daemonKindLsrules
 )
 
 // daemonRow is one line of the observe TUI: a launchd agent plus the
@@ -81,6 +82,9 @@ func newObserveModel(cfg Config) observeModel {
 		// last: its gcp tunnels ride on whatever the rows above have set up
 		// (proxy, resolver, VPN), so a failure here is usually a symptom of
 		// one of them.
+		// next to tunneling at the end: both are services this machine runs
+		// for itself rather than parts of the network path.
+		{name: appLsrules, configKey: appLsrules, label: cfg.Daemons.Lsrules.Label, scope: cfg.Daemons.Lsrules.Scope, kind: daemonKindLsrules},
 		{name: "tunneling", configKey: "tunneling", label: cfg.Daemons.Tunneling.Label, scope: cfg.Daemons.Tunneling.Scope, kind: daemonKindTunneling},
 	}
 	return observeModel{cfg: cfg, rows: rows}
@@ -130,6 +134,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return alpacaDetail(cfg)
 	case daemonKindPrivoxy:
 		return privoxyDetail(cfg)
+	case daemonKindLsrules:
+		return lsrulesDetail()
 	case daemonKindAdGuard:
 		return adguardDetail(cfg)
 	case daemonKindContainer:
@@ -228,6 +234,38 @@ func omtDetail() []string {
 	out := []string{summary}
 	out = append(out, lines...)
 	return out
+}
+
+// lsrulesDetail answers the question the row cannot: Little Snitch keeps the
+// rules it already downloaded, so a server that stopped serving is invisible
+// from the subscription side. What matters is whether the port still answers
+// TLS, and whether the certificate is about to expire - nothing renews it.
+func lsrulesDetail() []string {
+	if !lsrulesInstalled() {
+		return []string{"lsrules binary not found on PATH"}
+	}
+	st, err := lsrulesServeStatus()
+	if err != nil {
+		return []string{fmt.Sprintf("lsrules status failed: %v", firstLine(err.Error()))}
+	}
+	lines := []string{fmt.Sprintf("%s, %d rule group(s)", st.BaseURL, len(st.RuleGroups))}
+	switch {
+	case !st.Listening:
+		lines = append(lines, "not listening - subscriptions cannot refresh")
+	case !st.TLSOK:
+		lines = append(lines, "listening but TLS fails: "+firstLine(st.TLSError))
+	default:
+		lines = append(lines, "listening, TLS verified")
+	}
+	switch {
+	case st.CertificateError != "":
+		lines = append(lines, "certificate: "+firstLine(st.CertificateError))
+	case st.Certificate.ExpiresIn <= 0:
+		lines = append(lines, "certificate EXPIRED - reissue with local_ca")
+	case st.Certificate.ExpiresIn < 30:
+		lines = append(lines, fmt.Sprintf("certificate expires in %d days - reissue with local_ca", st.Certificate.ExpiresIn))
+	}
+	return lines
 }
 
 func tunnelingDetail() []string {
