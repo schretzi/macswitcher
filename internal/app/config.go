@@ -200,6 +200,10 @@ const (
 	// hostKubernetes is the /etc/hosts alias for the cluster API server, in
 	// the default no_proxy list because it resolves only on this machine.
 	hostKubernetes = "kubernetes"
+	// PROXY_STATE values in ~/.zsh/rcs/proxy. "off" is spelled by
+	// ProxyModeOff, which happens to be the same word.
+	proxyStateOn       = "on"
+	proxyStateFiltered = "filtered"
 )
 
 // contextHome is the context `config init` seeds and falls back to.

@@ -34,7 +34,13 @@ func setLocalProxy(cfgPath string) error {
 			return err
 		}
 	}
-	if err := updateZshProxy(proxyURL, noProxy, true); err != nil {
+	// Empty unless the filtering proxy is in the path for this context, which
+	// is what turns PROXY_STATE from "on" into "filtered".
+	filterAddr := ""
+	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && filterProxyAppliesTo(cfg, ctx) {
+		filterAddr = filterProxyAddr(cfg)
+	}
+	if err := updateZshProxy(proxyURL, noProxy, true, filterAddr); err != nil {
 		return err
 	}
 	if err := updateDockerProxy(proxyURL, noProxy, true); err != nil {
@@ -62,7 +68,7 @@ func unsetLocalProxy(cfgPath string) error {
 			return err
 		}
 	}
-	if err := updateZshProxy(proxyURL, noProxy, false); err != nil {
+	if err := updateZshProxy(proxyURL, noProxy, false, ""); err != nil {
 		return err
 	}
 	if err := updateDockerProxy("", "", false); err != nil {

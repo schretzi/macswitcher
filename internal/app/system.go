@@ -10,7 +10,21 @@ import (
 	"strings"
 )
 
-func updateZshProxy(proxyURL, noProxy string, enable bool) error {
+// updateZshProxy rewrites ~/.zsh/rcs/proxy, the file the shell sources for
+// its proxy environment and Starship reads for the prompt.
+//
+// filterAddr is the filtering proxy's host:port when it is in the path for
+// this context, empty otherwise. It makes PROXY_STATE three-valued -
+// off / on / filtered - because "on" alone cannot distinguish a proxy that
+// filters from one that does not, and the whole point of the filter is that
+// you can tell.
+//
+// What this deliberately does NOT claim: that the filter is answering right
+// now. The file is written when the context is applied, so it describes
+// routing, not liveness - a filter that dies an hour later still reads
+// "filtered" here. `macswitcher status` probes the port and is the place
+// that answers the other question.
+func updateZshProxy(proxyURL, noProxy string, enable bool, filterAddr string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -36,13 +50,20 @@ func updateZshProxy(proxyURL, noProxy string, enable bool) error {
 	}
 
 	state := ProxyModeOff
-	if enable {
-		state = "on"
+	switch {
+	case enable && strings.TrimSpace(filterAddr) != "":
+		state = proxyStateFiltered
+	case enable:
+		state = proxyStateOn
+	}
+	if !enable {
+		filterAddr = ""
 	}
 
 	content := strings.Join([]string{
 		"# Proxy configuration values (managed by macswitcher)",
 		fmt.Sprintf("export PROXY_STATE=%q", state),
+		fmt.Sprintf("export PROXY_FILTER=%q", filterAddr),
 		fmt.Sprintf("export PROXY_HOST=%q", host),
 		fmt.Sprintf("export PROXY_PORT=%q", port),
 		fmt.Sprintf("export PROXY_URL=%q", proxyURL),
