@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
+func switchContext(cfgPath string, args []string) error {
 	fs := flag.NewFlagSet("switch", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -24,8 +24,35 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 	if !ok {
 		return fmt.Errorf("context %q not found", selected)
 	}
-	cfg.CurrentContext = selected
-	if err := saveRuntimeState(cfgPath, ConfigState{CurrentContext: selected}); err != nil {
+	previous := cfg.CurrentContext
+	if err := applyContext(cfgPath, cfg, ctx, selected); err != nil {
+		rollbackContext(cfgPath, cfg, previous, selected)
+		return err
+	}
+	fmt.Printf("switched context to %s\n", selected)
+	return nil
+}
+
+// applyContext puts the machine into one context. Split out of switchContext
+// so a failed switch can be undone by applying the previous context with the
+// same code path - see rollbackContext.
+//
+// Order matters, and not in the obvious way:
+//
+//   - The runtime state is written first because setLocalProxy, unsetLocalProxy
+//     and the proxy service all read the current context back off disk to
+//     decide whether the filtering proxy is in the path.
+//   - Applications run *before* checkDNSResolution. A forward context reaches
+//     its corporate proxy's name only through the VPN, and the VPN is one of
+//     these applications: checking DNS first made such a context impossible to
+//     switch into from a machine with no tunnel up. It also means the filtering
+//     proxy is already listening by the time the system proxy is pointed at it.
+//   - The proxy is changed last, so anything that fails above leaves the
+//     machine on the proxy settings it already had rather than half-way onto
+//     new ones.
+func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string) error {
+	cfg.CurrentContext = name
+	if err := saveRuntimeState(cfgPath, ConfigState{CurrentContext: name}); err != nil {
 		return err
 	}
 
@@ -35,7 +62,7 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 		}
 	}
 	if len(ctx.Upstreams) > 0 {
-		if err := syncAdGuardUpstreams(cfg, ctx.Upstreams, selected); err != nil {
+		if err := syncAdGuardUpstreams(cfg, ctx.Upstreams, name); err != nil {
 			return err
 		}
 	}
@@ -43,8 +70,11 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 		return err
 	}
 	flushDNSCache()
+	if err := syncContextApplications(cfg, ctx); err != nil {
+		return err
+	}
 	if err := checkDNSResolution(ctx); err != nil {
-		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`", err, selected)
+		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`", err, name)
 	}
 	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 		if err := unsetLocalProxy(cfgPath); err != nil {
@@ -61,11 +91,35 @@ func switchContext(cfgPath string, args []string) error { //nolint:gocyclo // TO
 			return err
 		}
 	}
-	if err := syncContextApplications(cfg, ctx); err != nil {
-		return err
-	}
-	fmt.Printf("switched context to %s\n", selected)
 	return nil
+}
+
+// rollbackContext puts back the context that was active before a failed
+// switch. Best effort, and loud about it either way.
+//
+// A switch mutates the machine in steps, so a failure part-way through leaves
+// it in a state that matches neither context: resolvers pointed at a network
+// that is not reachable, a VPN up with no proxy to use it, a filtering proxy
+// stopped by the new context and not started by anything. That state is worse
+// than either end of the switch, and it is not obvious from the error which
+// half of it happened - so undo it rather than leave the operator to guess.
+func rollbackContext(cfgPath string, cfg Config, previous, failed string) {
+	if strings.TrimSpace(previous) == "" || previous == failed {
+		fmt.Printf("warning: the switch to %q failed part-way through and there is no different context to fall back to; the machine may be in a mixed state\n", failed)
+		return
+	}
+	prev, ok := cfg.Contexts[previous]
+	if !ok {
+		fmt.Printf("warning: the switch to %q failed part-way through and the previous context %q no longer exists; the machine may be in a mixed state\n", failed, previous)
+		return
+	}
+	fmt.Printf("the switch to %q failed part-way through; rolling back to %q\n", failed, previous)
+	if err := applyContext(cfgPath, cfg, prev, previous); err != nil {
+		fmt.Printf("warning: rolling back to %q failed as well: %v\n", previous, err)
+		fmt.Printf("warning: the machine is in a mixed state; fix the cause and rerun `macswitcher switch %s`\n", previous)
+		return
+	}
+	fmt.Printf("rolled back to %s\n", previous)
 }
 
 // syncAdGuardUpstreams points AdGuard Home at the upstream resolvers this

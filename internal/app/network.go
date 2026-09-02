@@ -8,6 +8,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+)
+
+// How long checkDNSResolution keeps retrying, and how often. Sized for a VPN
+// tunnel coming up: launchd returns as soon as the agent is started, but the
+// tunnel's routes and resolvers land a few seconds later.
+var (
+	dnsResolveTimeout      = 45 * time.Second
+	dnsResolvePollInterval = 2 * time.Second
 )
 
 func setLocalProxy(cfgPath string) error {
@@ -179,6 +188,12 @@ func flushDNSCache() {
 // builds have CGO_ENABLED=0, so Go's resolver falls back to reading
 // /etc/resolv.conf, which macOS does not keep in sync with the resolvers set
 // via `networksetup -setdnsservers`.
+//
+// It retries until dnsResolveTimeout. A forward context starts its VPN in the
+// step immediately before this one, and launchd reporting the agent as
+// started says nothing about the tunnel's routes and resolvers being usable
+// yet - the corporate proxy's name only resolves once they are. Failing on
+// the first attempt would make such a context unswitchable.
 func checkDNSResolution(ctx SwitchContext) error {
 	host := "google.com"
 	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
@@ -187,6 +202,26 @@ func checkDNSResolution(ctx SwitchContext) error {
 			return errors.New("proxy_mode is forward but forwarder_proxy.proxy_server is empty")
 		}
 	}
+	deadline := time.Now().Add(dnsResolveTimeout)
+	for attempt := 1; ; attempt++ {
+		err := resolveHostOnce(host)
+		if err == nil {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		if attempt == 1 {
+			fmt.Printf("waiting for %s to resolve (up to %s)...\n", host, dnsResolveTimeout)
+		}
+		time.Sleep(dnsResolvePollInterval)
+	}
+}
+
+// resolveHostOnce is a single resolution attempt. dscacheutil itself can hang
+// when the resolvers it was just pointed at are unreachable, in which case
+// runCommandOutput's timeout kills it and this reports the kill as the error.
+func resolveHostOnce(host string) error {
 	out, err := runCommandOutput("dscacheutil", "-q", "host", "-a", "name", host)
 	if err != nil {
 		return fmt.Errorf("dscacheutil -q host -a name %s failed: %w", host, err)

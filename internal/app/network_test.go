@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDscacheutilOutputHasAddress(t *testing.T) {
@@ -52,6 +53,34 @@ func TestCheckDNSResolutionForwardModeRequiresProxyServer(t *testing.T) {
 	err := checkDNSResolution(ctx)
 	if err == nil {
 		t.Fatal("expected an error when forward mode has no proxy_server configured")
+	}
+}
+
+// checkDNSResolution retries so that a forward context's VPN has time to bring
+// its resolvers up. The retry must still give up: a name that never resolves
+// has to end the switch rather than spin forever.
+func TestCheckDNSResolutionGivesUpAfterTheTimeout(t *testing.T) {
+	origTimeout, origPoll := dnsResolveTimeout, dnsResolvePollInterval
+	dnsResolveTimeout, dnsResolvePollInterval = 50*time.Millisecond, time.Millisecond
+	t.Cleanup(func() {
+		dnsResolveTimeout, dnsResolvePollInterval = origTimeout, origPoll
+	})
+
+	// .invalid is reserved by RFC 2606 and cannot resolve anywhere.
+	ctx := SwitchContext{
+		ProxyMode:      ProxyModeForward,
+		ForwarderProxy: &ForwarderProxyConfig{ProxyServer: "macswitcher-test.invalid"},
+	}
+	done := make(chan error, 1)
+	go func() { done <- checkDNSResolution(ctx) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for a name that cannot resolve")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("checkDNSResolution did not give up; the retry loop has no exit")
 	}
 }
 
