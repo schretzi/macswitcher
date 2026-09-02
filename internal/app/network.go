@@ -159,13 +159,41 @@ func applyLocalResolverDNS(cfg Config) error {
 	if resolvers[0] == "" {
 		resolvers[0] = loopbackResolver
 	}
+	// Search domains are set alongside the resolvers, and always set: see
+	// searchDomainArgs for why a context that names none must still clear
+	// them.
 	for _, svc := range services {
 		args := append([]string{"-setdnsservers", svc}, resolvers...)
 		if err := runCommand("networksetup", args...); err != nil {
 			return fmt.Errorf("set dns for %s: %w", svc, err)
 		}
+		if err := runCommand("networksetup", searchDomainArgs(cfg, svc)...); err != nil {
+			return fmt.Errorf("set search domains for %s: %w", svc, err)
+		}
 	}
 	return nil
+}
+
+// searchDomainArgs builds the networksetup call that applies the active
+// context's DNS search list to one network service.
+//
+// The list is always set, never merely left alone: a context naming no search
+// domains must actively clear whatever the previous one left behind, or a
+// corporate suffix follows the machine home and silently completes
+// single-label names against a network that is no longer there.
+//
+// These exist because a corporate PAC may nominate its proxy by short name
+// ("PROXY proxy:8080"). Nothing completes such a name except the search list,
+// so without it the proxy is unresolvable and every request through it fails -
+// surfacing as a 502 from the local proxy, which names the wrong culprit.
+func searchDomainArgs(cfg Config, service string) []string {
+	args := []string{"-setsearchdomains", service}
+	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && len(ctx.DNS.SearchDomains) > 0 {
+		return append(args, ctx.DNS.SearchDomains...)
+	}
+	// networksetup has no "clear" verb; the literal "Empty" is how it spells
+	// one.
+	return append(args, "Empty")
 }
 
 // flushDNSCache flushes macOS's system DNS cache (dscacheutil) and asks

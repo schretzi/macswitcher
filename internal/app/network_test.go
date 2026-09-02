@@ -231,3 +231,47 @@ func TestWriteAdGuardUpstreamsRequiresConfiguredPath(t *testing.T) {
 		t.Fatal("expected an error when adguard.upstreams_file is empty")
 	}
 }
+
+func TestSearchDomainArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		domains []string
+		want    []string
+	}{
+		{
+			name:    "context search domains are applied in order",
+			domains: []string{"branch.example", "corp.example"},
+			want:    []string{"-setsearchdomains", "Wi-Fi", "branch.example", "corp.example"},
+		},
+		{
+			// The important case: a context without search domains must
+			// clear them, so a corporate suffix cannot outlive the context
+			// that needed it and complete short names off-network.
+			name:    "no search domains clears the list",
+			domains: nil,
+			want:    []string{"-setsearchdomains", "Wi-Fi", "Empty"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				CurrentContext: "ctx",
+				Contexts: map[string]SwitchContext{
+					"ctx": {DNS: ContextDNSConfig{SearchDomains: tt.domains}},
+				},
+			}
+			got := searchDomainArgs(cfg, "Wi-Fi")
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("searchDomainArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchDomainArgsUnknownContextClears(t *testing.T) {
+	cfg := Config{CurrentContext: "missing", Contexts: map[string]SwitchContext{}}
+	want := []string{"-setsearchdomains", "Wi-Fi", "Empty"}
+	if got := searchDomainArgs(cfg, "Wi-Fi"); !slices.Equal(got, want) {
+		t.Errorf("searchDomainArgs() = %v, want %v", got, want)
+	}
+}

@@ -2,10 +2,13 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"gopkg.in/yaml.v3"
 )
 
 // daemonKind selects which extra, daemon-specific detail lines observeModel
@@ -209,14 +212,59 @@ func adguardDetail(cfg Config) []string {
 	return lines
 }
 
+// kerberosCcacheFromKeepAlive reads KerberosKeepAlive's own config and returns
+// the ccache path of its first profile.
+//
+// The ticket and the proxy credential are separate things that only sometimes
+// coincide. A context authenticates to its forward proxy either with a ticket
+// or with a Keychain password, so forwarder_proxy.ticket_file is empty
+// whenever the proxy is password-based - but KerberosKeepAlive is still
+// maintaining a ticket, because plenty of other things on a corporate network
+// need one. Reading its config finds the ticket in that case instead of
+// reporting "not configured" while a perfectly valid ticket sits on disk.
+func kerberosCcacheFromKeepAlive() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "kerberoskeepalive", "config.yaml"))
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		Profiles []struct {
+			CcachePath string `yaml:"ccache_path"`
+		} `yaml:"profiles"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return ""
+	}
+	for _, p := range parsed.Profiles {
+		if strings.TrimSpace(p.CcachePath) != "" {
+			return strings.TrimSpace(p.CcachePath)
+		}
+	}
+	return ""
+}
+
 func kerberosDetail(cfg Config) []string {
 	ctx := cfg.Contexts[cfg.CurrentContext]
 	ticketFile := ""
 	if ctx.ForwarderProxy != nil {
 		ticketFile = ctx.ForwarderProxy.TicketFile
 	}
+	source := "forwarder_proxy.ticket_file"
+	if strings.TrimSpace(ticketFile) == "" {
+		if fallback := kerberosCcacheFromKeepAlive(); fallback != "" {
+			ticketFile = fallback
+			source = "kerberoskeepalive ccache_path"
+		}
+	}
 	valid, summary, detail := kerberosTicketStatus(ticketFile)
 	lines := []string{fmt.Sprintf("ticket (%s): %s", ticketFile, summary)}
+	if ticketFile != "" {
+		lines = append(lines, "source: "+source)
+	}
 	if !valid && strings.TrimSpace(detail) != "" {
 		lines = append(lines, strings.TrimSpace(detail))
 	}

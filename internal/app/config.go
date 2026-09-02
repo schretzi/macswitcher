@@ -83,6 +83,12 @@ type ContextDNSConfig struct {
 	// fails a switch that in fact worked. Point this at an intranet name that
 	// is always resolvable on the network the context describes.
 	CheckHost string `yaml:"check_host,omitempty" mapstructure:"check_host"`
+	// SearchDomains is the DNS search list to apply, completing single-label
+	// names. Needed when a corporate PAC nominates its proxy by short name
+	// ("PROXY proxy:8080"), which nothing else can resolve. Left empty the
+	// search list is cleared, so a suffix set for one context cannot leak
+	// into the next.
+	SearchDomains []string `yaml:"search_domains,omitempty" mapstructure:"search_domains"`
 }
 
 type AlpacaConfig struct {

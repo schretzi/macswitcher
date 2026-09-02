@@ -47,6 +47,9 @@ dns:
     - 127.0.0.2
   # Optional. The name a switch resolves to decide whether DNS came up.
   check_host: intranet-host.example.com
+  # Optional. DNS search list, completing single-label names.
+  search_domains:
+    - corp.example.com
 proxy_mode: direct
 apps:
   reload:
@@ -62,6 +65,19 @@ the network was never going to answer, and a switch that in fact worked is
 reported as failed. Point `check_host` at an intranet name that is always
 resolvable on the network the context describes. An explicit value wins over
 the forward proxy's hostname.
+
+`dns.search_domains` sets the DNS search list, which completes single-label
+names. A corporate PAC may nominate its proxy by short name — `PROXY
+proxy:8080` — and nothing but the search list can turn that into a resolvable
+address. Without it every request through that proxy fails, and because the
+failure is reported by the local proxy rather than by DNS it arrives as a
+`502 Bad Gateway`, naming the wrong culprit entirely.
+
+The list is applied on every switch, including when a context names none: in
+that case it is *cleared*. This is deliberate. A search domain that outlived
+the context needing it goes on completing short names against a network the
+machine has since left, which resolves them to nothing or, worse, to something
+unintended on the current network.
 
 The global and context configuration files use YAML. Runtime context selection
 is kept separately in `state.json`; Docker's own `~/.docker/config.json` also
