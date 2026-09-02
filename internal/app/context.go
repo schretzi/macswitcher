@@ -220,13 +220,12 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 		if len(ctx.Upstreams) == 0 {
 			warnings = append(warnings, fmt.Sprintf("contexts.%s.upstreams is empty", name))
 		}
-		// The wiring this replaced: a context that names its own PAC through
-		// alpaca.command still works, but filter_proxy will not fill the
-		// placeholder it never sees - so the two silently disagree about
-		// which PAC alpaca ends up with.
-		if cfg.FilterProxy.Enabled && ctx.Alpaca != nil && commandNamesPAC(ctx.Alpaca.Command) {
+		// A direct context must leave the PAC to filter_proxy so its generated
+		// local-network exceptions cannot drift from local_proxy.no_proxy. A
+		// forward context necessarily names the corporate PAC itself.
+		if filterProxyAppliesTo(cfg, ctx) && ctx.Alpaca != nil && commandNamesPAC(ctx.Alpaca.Command) {
 			warnings = append(warnings, fmt.Sprintf(
-				"contexts.%s.alpaca.command names its own PAC (-C) while filter_proxy is enabled; "+
+				"contexts.%s.alpaca.command names its own PAC (-C) while filter_proxy applies; "+
 					"drop the override and let filter_proxy generate it", name,
 			))
 		}
