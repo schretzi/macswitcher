@@ -72,11 +72,11 @@ func TestKerberosCcacheFromKeepAlive(t *testing.T) {
 	}
 }
 
-// TestKerberosDetailFallsBackToKeepAlive covers the reported bug: a context
-// authenticating to its proxy with a Keychain password has no
-// forwarder_proxy.ticket_file, and observe reported "not configured" while
-// KerberosKeepAlive was maintaining a perfectly valid ticket.
-func TestKerberosDetailFallsBackToKeepAlive(t *testing.T) {
+// TestKerberosDetailUsesKeepAliveCcache covers the reported bug: observe read
+// the ticket location from forwarder_proxy.ticket_file, which is a proxy
+// credential rather than a ticket location, and reported "not configured"
+// while KerberosKeepAlive was maintaining a perfectly valid ticket.
+func TestKerberosDetailUsesKeepAliveCcache(t *testing.T) {
 	writeKeepAliveConfig(t, "profiles:\n  - name: corp\n    ccache_path: /tmp/does-not-exist-ccache\n")
 	cfg := Config{
 		CurrentContext: "ctx",
@@ -91,28 +91,10 @@ func TestKerberosDetailFallsBackToKeepAlive(t *testing.T) {
 	if !contains(lines, "/tmp/does-not-exist-ccache") {
 		t.Errorf("kerberosDetail() did not mention the keepalive ccache: %v", lines)
 	}
-	if !contains(lines, "kerberoskeepalive ccache_path") {
-		t.Errorf("kerberosDetail() did not name its source: %v", lines)
-	}
-}
-
-// TestKerberosDetailPrefersContextTicketFile keeps the fallback from taking
-// over when the context does name a ticket: that file is the one the proxy
-// actually authenticates with, so it is what the screen must report on.
-func TestKerberosDetailPrefersContextTicketFile(t *testing.T) {
-	writeKeepAliveConfig(t, "profiles:\n  - name: corp\n    ccache_path: /tmp/keepalive-ccache\n")
-	cfg := Config{
-		CurrentContext: "ctx",
-		Contexts: map[string]SwitchContext{
-			"ctx": {ForwarderProxy: &ForwarderProxyConfig{TicketFile: "/tmp/context-ccache"}},
-		},
-	}
-	lines := kerberosDetail(cfg)
-	if !contains(lines, "/tmp/context-ccache") {
-		t.Errorf("kerberosDetail() did not use the context ticket_file: %v", lines)
-	}
-	if contains(lines, "/tmp/keepalive-ccache") {
-		t.Errorf("kerberosDetail() used the fallback despite a context ticket_file: %v", lines)
+	// The file does not exist, so the ticket is invalid - and that must be
+	// reported as survivable, since alpaca still has Basic to fall back on.
+	if !contains(lines, "falls back to Basic") {
+		t.Errorf("kerberosDetail() did not mention the Basic fallback: %v", lines)
 	}
 }
 

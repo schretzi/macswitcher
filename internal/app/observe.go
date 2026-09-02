@@ -171,11 +171,9 @@ func alpacaDetail(cfg Config) []string {
 	switch {
 	case isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil:
 		fp := ctx.ForwarderProxy
-		auth := "keychain (NTLM/Basic)"
-		if strings.TrimSpace(fp.TicketFile) != "" {
-			auth = "kerberos ticket_file=" + fp.TicketFile
-		}
-		lines = append(lines, fmt.Sprintf("forwarding -> %s:%d via %s", fp.ProxyServer, fp.Port, auth))
+		// alpaca decides per request: Negotiate if a ticket is available,
+		// Basic from the Keychain password otherwise.
+		lines = append(lines, fmt.Sprintf("forwarding -> %s:%d via negotiate-then-basic", fp.ProxyServer, fp.Port))
 	case isForwardProxyMode(ctx.ProxyMode):
 		lines = append(lines, "proxy_mode is forward but forwarder_proxy is not configured")
 	default:
@@ -215,13 +213,12 @@ func adguardDetail(cfg Config) []string {
 // kerberosCcacheFromKeepAlive reads KerberosKeepAlive's own config and returns
 // the ccache path of its first profile.
 //
-// The ticket and the proxy credential are separate things that only sometimes
-// coincide. A context authenticates to its forward proxy either with a ticket
-// or with a Keychain password, so forwarder_proxy.ticket_file is empty
-// whenever the proxy is password-based - but KerberosKeepAlive is still
-// maintaining a ticket, because plenty of other things on a corporate network
-// need one. Reading its config finds the ticket in that case instead of
-// reporting "not configured" while a perfectly valid ticket sits on disk.
+// This is the only place the ticket is named. macswitcher used to carry its
+// own forwarder_proxy.ticket_file, which conflated two separate things: where
+// the ticket lives, and whether the proxy authenticates with it. alpaca finds
+// the ticket by itself and picks Negotiate or Basic per request, so only the
+// first question is left - and KerberosKeepAlive, which creates the file, is
+// the authority on it.
 func kerberosCcacheFromKeepAlive() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -247,23 +244,14 @@ func kerberosCcacheFromKeepAlive() string {
 	return ""
 }
 
-func kerberosDetail(cfg Config) []string {
-	ctx := cfg.Contexts[cfg.CurrentContext]
-	ticketFile := ""
-	if ctx.ForwarderProxy != nil {
-		ticketFile = ctx.ForwarderProxy.TicketFile
-	}
-	source := "forwarder_proxy.ticket_file"
-	if strings.TrimSpace(ticketFile) == "" {
-		if fallback := kerberosCcacheFromKeepAlive(); fallback != "" {
-			ticketFile = fallback
-			source = "kerberoskeepalive ccache_path"
-		}
-	}
+func kerberosDetail(_ Config) []string {
+	ticketFile := kerberosCcacheFromKeepAlive()
 	valid, summary, detail := kerberosTicketStatus(ticketFile)
 	lines := []string{fmt.Sprintf("ticket (%s): %s", ticketFile, summary)}
-	if ticketFile != "" {
-		lines = append(lines, "source: "+source)
+	if !valid {
+		// Not an outage on its own: alpaca falls back to Basic against the
+		// forward proxy, so say so rather than leaving it looking fatal.
+		lines = append(lines, "proxy auth falls back to Basic while this is invalid")
 	}
 	if !valid && strings.TrimSpace(detail) != "" {
 		lines = append(lines, strings.TrimSpace(detail))

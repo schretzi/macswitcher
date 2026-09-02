@@ -137,37 +137,32 @@ forwarder_proxy:
   different host. Leaving it empty, or using `*`, is permissive and triggers a
   `config validate` warning.
 
-**Kerberos/Negotiate (ticket file)**:
+**Kerberos/Negotiate**: nothing to configure.
 
-```yaml
-proxy_mode: forward
-forwarder_proxy:
-  proxy_server: proxy.example.com
-  port: 8080
-  ticket_file: ~/Library/Caches/tickets/work.krb5cc
-  pac_file: https://proxy.example.com/proxy.pac
-  auth_allowlist:
-    - proxy.example.com
-```
+alpaca authenticates to the forward proxy by trying Negotiate, then NTLM, then
+Basic, and drops any method it has no credentials for. It finds a Kerberos
+ticket on its own, so Negotiate needs no configuration — keep a ticket alive
+with `KerberosKeepAlive` and it is used automatically.
 
-- Set `ticket_file` instead of `username`/`password_keychain_service` when the
-  upstream proxy authenticates via Kerberos/Negotiate. `username`,
-  `password_keychain_service`, and `password_keychain_account` are ignored and
-  not required in this mode — there is no Keychain entry to create, and
-  `proxy password-set` refuses to run against a `ticket_file` context.
-  `pac_file` and `auth_allowlist` behave exactly as in the NTLM/Basic path.
-- `ticket_file` points at the Kerberos credential cache (ccache) file. It is
-  not managed by macswitcher: a separate `KerberosKeepAlive` launch agent is
-  expected to run continuously in the background, renewing/refreshing the
-  ticket in that file. macswitcher's job is only to hand that already-alive
-  ticket to Alpaca, not to acquire or renew it.
-- At `proxy set`/`proxy` runtime, macswitcher exports `KRB5CCNAME` pointing at
-  `ticket_file` (expanding a leading `~/`) for the Alpaca process, and also
-  exposes `{{ticket_file}}` and `{{upstream_proxy}}` (`proxy_server:port`) as
-  template tokens for a context/global `alpaca.command`, for Alpaca builds
-  that take the ccache path or upstream proxy as explicit flags instead of
-  via environment. `{{cntlm_conf}}` and `{{upstream_url}}` are NTLM/Basic-only
-  and error out if the active `forwarder_proxy` has `ticket_file` set.
+macswitcher's part is the last rung: it reads the `forwarder_proxy` password
+from the Keychain and passes it to alpaca as `BASIC_CREDENTIALS`. Without it a
+context whose ticket has expired — or whose KDC cannot be discovered — has no
+usable authentication method at all, and every request through the proxy
+fails. Basic is slower, authenticating per request, and weaker, which is why
+it is last and not first.
+
+The password is passed through the environment rather than on the command
+line: argv is world-readable via `ps`, an environment is not (`ps -E` shows
+another user's environment only to root).
+
+There is no `ticket_file` setting. It used to exist and conflated two separate
+questions — where the ticket lives, and whether the proxy authenticates with
+it. alpaca answers both by itself, and `observe` reads the ticket's location
+from `KerberosKeepAlive`'s own `ccache_path`, which is the thing that creates
+the file.
+
+cntlm is likewise gone, along with the `{{cntlm_conf}}` template token. alpaca
+speaks NTLM directly; there is nothing left for a bridge to do.
 
 The public config contains no environment-specific IPs, hostnames, usernames,
 PAC URLs, or proxy credentials. Put those values in the private/work overlays.
@@ -263,9 +258,10 @@ status of every daemon macswitcher cares about, refreshed automatically every
   Keychain- or Kerberos-based.
 - **unbound** — shows running/stopped and the `forward-addr` entries
   currently in `unbound.forwarders_file`.
-- **kerberoskeepalive** — shows running/stopped and, for the active
-  context's `forwarder_proxy.ticket_file`, whether `klist` reports a valid,
-  non-expired ticket.
+- **kerberoskeepalive** — shows running/stopped and, for the `ccache_path` of
+  `KerberosKeepAlive`'s first profile, whether `klist` reports a valid,
+  non-expired ticket. An invalid ticket is reported as survivable, because
+  alpaca falls back to Basic against the forward proxy.
 - **omt** — shown only if the `omt` binary is on `PATH`; runs `omt status`
   and summarizes how many configured OAuth2 accounts have a valid token.
 - **vpn** — a generic LaunchAgent-supervised VPN connection (e.g. an

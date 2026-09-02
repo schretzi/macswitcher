@@ -225,7 +225,7 @@ func expandTilde(path string) string {
 // ticket; those are reported through the returned summary/detail instead.
 func kerberosTicketStatus(ticketFile string) (valid bool, summary, detail string) {
 	if strings.TrimSpace(ticketFile) == "" {
-		return false, "not configured", "no ticket location: active context has no forwarder_proxy.ticket_file, and kerberoskeepalive has no profile with a ccache_path"
+		return false, "not configured", "kerberoskeepalive has no profile with a ccache_path"
 	}
 	path := expandTilde(ticketFile)
 	out, err := runCommandOutput("klist", "-c", path)

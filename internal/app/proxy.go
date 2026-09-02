@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -130,22 +129,26 @@ func recommendRuntime(methods []string) string {
 		}
 		return false
 	}
-	if has("NTLM") {
-		if has("NEGOTIATE") || has("KERBEROS") {
-			return "Negotiate and NTLM detected: try cntlm first, then evaluate Kerberos-native client path if policy requires it"
-		}
-		return "NTLM detected: cntlm is usually the most reliable local bridge for CLI/Docker tooling"
-	}
+	// alpaca tries Negotiate, then NTLM, then Basic, and needs no help
+	// choosing: it is told what is available and picks the strongest the
+	// proxy accepts. So these are notes on what to make available, not on
+	// which tool to reach for.
 	if has("NEGOTIATE") || has("KERBEROS") {
-		return "Kerberos/Negotiate detected: prefer Kerberos-native client path; cntlm may not satisfy strict Kerberos-only policy"
+		if has("NTLM") {
+			return "Negotiate and NTLM offered: a Kerberos ticket is used when present, with Basic as the fallback"
+		}
+		return "Kerberos/Negotiate offered: keep a ticket alive (kerberoskeepalive), since Basic may be refused"
+	}
+	if has("NTLM") {
+		return "NTLM offered: alpaca falls back to Basic, which this proxy may refuse - verify before relying on it"
 	}
 	if has("BASIC") {
-		return "Basic auth detected: cntlm should work, and direct client proxy config is also an option"
+		return "Basic offered: the Keychain password alone is enough, no ticket needed"
 	}
-	return "Auth method detected but uncommon; test cntlm first, then evaluate Kerberos-native client path if authentication still fails"
+	return "Auth method detected but uncommon; check whether the proxy accepts Basic, which is alpaca's last resort"
 }
 
-func runProxy(cfgPath string) error { //nolint:gocyclo // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
+func runProxy(cfgPath string) error {
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return err
@@ -171,15 +174,11 @@ func runProxy(cfgPath string) error { //nolint:gocyclo // TODO: split this up. L
 	}
 	// No timeout: this is the proxy itself and runs until launchd stops it.
 	cmd := exec.CommandContext(context.Background(), cmdArgs[0], cmdArgs[1:]...) // #nosec G204 -- cmdArgs come from the operator-controlled config file (Alpaca command), not untrusted input
-	if ctx, ok := cfg.Contexts[cfg.CurrentContext]; ok && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) != "" {
-		ticketFile := strings.TrimSpace(ctx.ForwarderProxy.TicketFile)
-		if after, ok0 := strings.CutPrefix(ticketFile, "~/"); ok0 {
-			if home, err := os.UserHomeDir(); err == nil {
-				ticketFile = filepath.Join(home, after)
-			}
-		}
-		cmd.Env = append(os.Environ(), "KRB5CCNAME="+ticketFile)
+	env, err := proxyEnv(cfg)
+	if err != nil {
+		return err
 	}
+	cmd.Env = env
 	// alpaca is chatty and runs for as long as the session does, so its output
 	// goes to macswitcher's own log rather than to launchd's StandardOutPath.
 	// newsyslog rotates that log by renaming it, and a plain inherited fd
@@ -208,6 +207,49 @@ func runProxy(cfgPath string) error { //nolint:gocyclo // TODO: split this up. L
 	return cmd.Run()
 }
 
+// proxyEnv builds alpaca's environment, adding the Basic credentials that are
+// its last-resort authentication method.
+//
+// alpaca tries Negotiate, then NTLM, then Basic, and drops any method it has
+// no credentials for. A Kerberos ticket is found on its own, so Negotiate
+// needs nothing from here - but when there is no valid ticket the chain used
+// to be empty and every request through the proxy failed. That is not
+// hypothetical: it is what a KDC that cannot be discovered leaves behind, and
+// it took the whole proxy down with it.
+//
+// Passing the Keychain password as BASIC_CREDENTIALS gives the chain a rung to
+// fall back to. Basic is slower (it authenticates per request) and weaker, so
+// it is deliberately last - alpaca still prefers the ticket whenever one
+// exists, and only reaches this when it does not.
+//
+// The password goes in the environment rather than in argv because argv is
+// world-readable through ps, and an environment is not: on macOS `ps -E` shows
+// another user's environment only to root. This is also the interface alpaca
+// documents for exactly that reason.
+func proxyEnv(cfg Config) ([]string, error) {
+	env := os.Environ()
+	ctx, ok := cfg.Contexts[cfg.CurrentContext]
+	if !ok || !isForwardProxyMode(ctx.ProxyMode) || ctx.ForwarderProxy == nil {
+		return env, nil
+	}
+	fp := *ctx.ForwarderProxy
+	if fp.PasswordKeychainAccount == "" {
+		fp.PasswordKeychainAccount = fp.Username
+	}
+	if strings.TrimSpace(fp.Username) == "" || strings.TrimSpace(fp.PasswordKeychainService) == "" {
+		return env, nil
+	}
+	password, err := keychainPasswordGet(fp.PasswordKeychainService, fp.PasswordKeychainAccount)
+	if err != nil {
+		return nil, fmt.Errorf("read forwarder proxy password from Keychain: %w", err)
+	}
+	if password == "" {
+		return env, nil
+	}
+	// alpaca base64-encodes this itself; it wants the raw "user:password".
+	return append(env, "BASIC_CREDENTIALS="+fp.Username+":"+password), nil
+}
+
 // proxyLogPath is ~/Library/Logs/macswitcher.log - flat, named after the
 // binary, matching every other job.
 func proxyLogPath() (string, error) {
@@ -231,7 +273,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	forwarder := ForwarderProxyConfig{}
 	password := ""
 	var err error
-	if forwarderProxy != nil { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
+	if forwarderProxy != nil {
 		forwarder = *forwarderProxy
 		if forwarder.PasswordKeychainAccount == "" {
 			forwarder.PasswordKeychainAccount = forwarder.Username
@@ -239,22 +281,7 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 		if err := validateForwarderProxy(forwarder); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(forwarder.TicketFile) == "" {
-			password, err = keychainPasswordGet(forwarder.PasswordKeychainService, forwarder.PasswordKeychainAccount)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	cntlmConfPath := ""
-	if commandUsesToken(command, "{{cntlm_conf}}") {
-		if forwarderProxy == nil {
-			return nil, errors.New("{{cntlm_conf}} requires an active forwarder_proxy")
-		}
-		if strings.TrimSpace(forwarder.TicketFile) != "" {
-			return nil, errors.New("{{cntlm_conf}} requires a password-based forwarder_proxy, not ticket_file")
-		}
-		cntlmConfPath, err = generateCntlmConfig(cfg, password)
+		password, err = keychainPasswordGet(forwarder.PasswordKeychainService, forwarder.PasswordKeychainAccount)
 		if err != nil {
 			return nil, err
 		}
@@ -263,9 +290,6 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	if commandUsesToken(command, "{{upstream_url}}") {
 		if forwarderProxy == nil {
 			return nil, errors.New("{{upstream_url}} requires an active forwarder_proxy")
-		}
-		if strings.TrimSpace(forwarder.TicketFile) != "" {
-			return nil, errors.New("{{upstream_url}} requires a password-based forwarder_proxy, not ticket_file")
 		}
 		upstreamURL, err = buildForwarderUpstreamURL(forwarder, password)
 		if err != nil {
@@ -287,7 +311,6 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	}
 
 	authAllowlist := strings.Join(forwarder.AuthAllowlist, ",")
-	ticketFile := strings.TrimSpace(forwarder.TicketFile)
 	upstreamProxy := ""
 	if strings.TrimSpace(forwarder.ProxyServer) != "" {
 		upstreamProxy = fmt.Sprintf("%s:%d", forwarder.ProxyServer, forwarder.Port)
@@ -295,7 +318,6 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	replacements := map[string]string{
 		placeholderLocalHost: cfg.LocalProxy.Host,
 		placeholderLocalPort: strconv.Itoa(cfg.LocalProxy.Port),
-		"{{cntlm_conf}}":     cntlmConfPath,
 		"{{proxy_server}}":   forwarder.ProxyServer,
 		"{{proxy_port}}":     strconv.Itoa(forwarder.Port),
 		"{{username}}":       forwarder.Username,
@@ -303,7 +325,6 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 		placeholderPACFile:   pacFile,
 		"{{upstream_url}}":   upstreamURL,
 		"{{auth_allowlist}}": authAllowlist,
-		"{{ticket_file}}":    ticketFile,
 		"{{upstream_proxy}}": upstreamProxy,
 	}
 	out := make([]string, 0, len(command))
@@ -325,50 +346,6 @@ func buildProxyCommand(cfg Config, alpaca AlpacaConfig) ([]string, error) { //no
 	return out, nil
 }
 
-func generateCntlmConfig(cfg Config, password string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	generatedDir := filepath.Join(home, ".config", "macswitcher", "generated")
-	if err := os.MkdirAll(generatedDir, 0o700); err != nil {
-		return "", err
-	}
-	contextName := cfg.CurrentContext
-	if contextName == "" {
-		contextName = "default"
-	}
-	confPath := filepath.Join(generatedDir, "cntlm-"+contextName+".conf")
-	ctx := cfg.Contexts[cfg.CurrentContext]
-	if ctx.ForwarderProxy == nil {
-		return "", errors.New("active context has no forwarder_proxy configured")
-	}
-	proxy := *ctx.ForwarderProxy
-	domain, user := splitDomainAndUser(proxy.Username)
-	if user == "" {
-		user = proxy.Username
-	}
-	lines := []string{
-		"# Generated by macswitcher. Permissions are 0600.",
-		"Listen " + fmt.Sprintf("%s:%d", cfg.LocalProxy.Host, cfg.LocalProxy.Port),
-		"Proxy " + fmt.Sprintf("%s:%d", proxy.ProxyServer, proxy.Port),
-		"Username " + user,
-		"Auth NTLMv2",
-		"Password " + password,
-	}
-	if domain != "" {
-		lines = append(lines, "Domain "+domain)
-	}
-	if len(cfg.LocalProxy.NoProxy) > 0 {
-		lines = append(lines, "NoProxy "+strings.Join(cfg.LocalProxy.NoProxy, ","))
-	}
-	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(confPath, []byte(content), 0o600); err != nil {
-		return "", err
-	}
-	return confPath, nil
-}
-
 func commandUsesToken(parts []string, token string) bool {
 	for _, part := range parts {
 		if strings.Contains(part, token) {
@@ -378,20 +355,6 @@ func commandUsesToken(parts []string, token string) bool {
 	return false
 }
 
-func splitDomainAndUser(raw string) (string, string) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", ""
-	}
-	if parts := strings.SplitN(trimmed, "\\", 2); len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	if parts := strings.SplitN(trimmed, "/", 2); len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return "", trimmed
-}
-
 func validateForwarderProxy(ep ForwarderProxyConfig) error {
 	if strings.TrimSpace(ep.ProxyServer) == "" {
 		return errors.New("forwarder_proxy.proxy_server is required")
@@ -399,11 +362,9 @@ func validateForwarderProxy(ep ForwarderProxyConfig) error {
 	if ep.Port <= 0 {
 		return errors.New("forwarder_proxy.port must be > 0")
 	}
-	// A Kerberos ticket_file and Keychain-backed username/password are alternative
-	// auth paths; ticket_file skips the Keychain requirements entirely.
-	if strings.TrimSpace(ep.TicketFile) != "" {
-		return nil
-	}
+	// Username and a Keychain-backed password are now always required: they
+	// are what alpaca's Basic fallback needs, and that fallback is the only
+	// thing standing between a missing Kerberos ticket and a dead proxy.
 	if strings.TrimSpace(ep.Username) == "" {
 		return errors.New("forwarder_proxy.username is required")
 	}
@@ -438,9 +399,6 @@ func keychainPasswordSet(cfgPath string) error {
 	if err := validateForwarderProxy(proxy); err != nil {
 		return err
 	}
-	if strings.TrimSpace(proxy.TicketFile) != "" {
-		return errors.New("active forwarder_proxy uses ticket_file (Kerberos); no Keychain password to set")
-	}
 	if strings.TrimSpace(proxy.PasswordKeychainService) == "" {
 		return errors.New("forwarder_proxy.password_keychain_service is required")
 	}
@@ -464,7 +422,9 @@ func keychainPasswordSet(cfgPath string) error {
 	return nil
 }
 
-func keychainPasswordGet(service, account string) (string, error) {
+// keychainPasswordGet is a variable so tests can supply a password without a
+// real Keychain, which is neither present nor unlockable in CI.
+var keychainPasswordGet = func(service, account string) (string, error) {
 	args := []string{"find-generic-password", "-s", service, "-w"}
 	if strings.TrimSpace(account) != "" {
 		args = append(args, "-a", account)

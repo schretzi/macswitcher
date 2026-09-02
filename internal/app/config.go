@@ -161,7 +161,6 @@ type ForwarderProxyConfig struct {
 	Username                string   `yaml:"username,omitempty" mapstructure:"username"`
 	PasswordKeychainService string   `yaml:"password_keychain_service,omitempty" mapstructure:"password_keychain_service"`
 	PasswordKeychainAccount string   `yaml:"password_keychain_account,omitempty" mapstructure:"password_keychain_account"`
-	TicketFile              string   `yaml:"ticket_file,omitempty" mapstructure:"ticket_file"`
 	PacFile                 string   `yaml:"pac_file" mapstructure:"pac_file"`
 	AuthAllowlist           []string `yaml:"auth_allowlist" mapstructure:"auth_allowlist"`
 }

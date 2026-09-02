@@ -202,7 +202,7 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 			if err := validateForwarderProxy(proxy); err != nil {
 				critical = append(critical, fmt.Sprintf("contexts.%s.forwarder_proxy: %v", name, err))
 			}
-			if strings.TrimSpace(proxy.TicketFile) == "" && strings.TrimSpace(proxy.PasswordKeychainAccount) == "" {
+			if strings.TrimSpace(proxy.PasswordKeychainAccount) == "" {
 				warnings = append(warnings, fmt.Sprintf("contexts.%s.forwarder_proxy.password_keychain_account is empty; runtime will fallback to username", name))
 			}
 			if len(proxy.AuthAllowlist) == 0 {
@@ -244,7 +244,7 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 			map[bool]string{true: " - traffic goes out unfiltered (fail_open)", false: " - requests will fail"}[cfg.FilterProxy.FailOpen],
 		))
 	}
-	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil && strings.TrimSpace(ctx.ForwarderProxy.TicketFile) == "" {
+	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
 		account := ctx.ForwarderProxy.PasswordKeychainAccount
 		if strings.TrimSpace(account) == "" {
 			account = ctx.ForwarderProxy.Username
