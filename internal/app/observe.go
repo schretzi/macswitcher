@@ -223,6 +223,7 @@ func kerberosCcacheFromKeepAlive() string {
 	if err != nil {
 		return ""
 	}
+	// #nosec G304 -- fixed path under the user's own home dir; KerberosKeepAlive's config location is not caller-controlled
 	data, err := os.ReadFile(filepath.Join(home, ".config", "kerberoskeepalive", "config.yaml"))
 	if err != nil {
 		return ""
