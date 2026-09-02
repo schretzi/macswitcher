@@ -137,12 +137,16 @@ forwarder_proxy:
   different host. Leaving it empty, or using `*`, is permissive and triggers a
   `config validate` warning.
 
-**Kerberos/Negotiate**: nothing to configure.
+**Kerberos/Negotiate**: configure the ticket location once in
+KerberosKeepAlive.
 
 alpaca authenticates to the forward proxy by trying Negotiate, then NTLM, then
-Basic, and drops any method it has no credentials for. It finds a Kerberos
-ticket on its own, so Negotiate needs no configuration — keep a ticket alive
-with `KerberosKeepAlive` and it is used automatically.
+Basic, and drops any method it has no credentials for. macOS GSS uses its
+default credential cache, while KerberosKeepAlive deliberately refreshes the
+`ccache_path` named in its own profile. In forward contexts macswitcher passes
+that path as `KRB5CCNAME=FILE:<ccache_path>` to alpaca, so its Negotiate token
+uses the ticket KKA actually maintains. Keep the ticket alive with
+KerberosKeepAlive and it is used automatically.
 
 macswitcher's part is the last rung: it reads the `forwarder_proxy` password
 from the Keychain and passes it to alpaca as `BASIC_CREDENTIALS`. Without it a
@@ -157,9 +161,9 @@ another user's environment only to root).
 
 There is no `ticket_file` setting. It used to exist and conflated two separate
 questions — where the ticket lives, and whether the proxy authenticates with
-it. alpaca answers both by itself, and `observe` reads the ticket's location
-from `KerberosKeepAlive`'s own `ccache_path`, which is the thing that creates
-the file.
+it. `observe` and alpaca's `KRB5CCNAME` both read the location from
+KerberosKeepAlive's own `ccache_path`, which is the thing that creates the
+file.
 
 cntlm is likewise gone, along with the `{{cntlm_conf}}` template token. alpaca
 speaks NTLM directly; there is nothing left for a bridge to do.
@@ -365,4 +369,3 @@ were decided jointly after researching the actual behavior of each tool
 locally; the generated configuration was verified end-to-end by running the
 local pipeline (`make pipeline`), a goreleaser snapshot build, and a live
 gitleaks pre-commit test, rather than assumed to work.
-

@@ -32,6 +32,15 @@ func basicCred(env []string) (string, bool) {
 	return "", false
 }
 
+func envValue(env []string, name string) (string, bool) {
+	for _, e := range env {
+		if after, ok := strings.CutPrefix(e, name+"="); ok {
+			return after, true
+		}
+	}
+	return "", false
+}
+
 // TestProxyEnvSuppliesBasicCredentials is the fallback the whole change is
 // for: without it, a context whose Kerberos ticket is missing has no
 // authentication method left and every request through the proxy fails.
@@ -54,6 +63,22 @@ func TestProxyEnvSuppliesBasicCredentials(t *testing.T) {
 	}
 	if want := "user:s3cret"; got != want {
 		t.Errorf("BASIC_CREDENTIALS = %q, want %q", got, want)
+	}
+}
+
+func TestProxyEnvUsesKerberosKeepAliveCache(t *testing.T) {
+	writeKeepAliveConfig(t, "profiles:\n  - name: corp\n    ccache_path: /tmp/krb5cc-corp\n")
+	t.Setenv("KRB5CCNAME", "API:interactive-cache")
+	stubKeychain(t, "s3cret", nil)
+
+	env, err := proxyEnv(forwardCfg(&ForwarderProxyConfig{
+		ProxyServer: "proxy.example.com", Port: 8080, Username: "u", PasswordKeychainService: "s",
+	}, ProxyModeForward))
+	if err != nil {
+		t.Fatalf("proxyEnv() error = %v", err)
+	}
+	if got, ok := envValue(env, "KRB5CCNAME"); !ok || got != "FILE:/tmp/krb5cc-corp" {
+		t.Errorf("KRB5CCNAME = %q, present=%v; want FILE:/tmp/krb5cc-corp", got, ok)
 	}
 }
 

@@ -215,10 +215,9 @@ func adguardDetail(cfg Config) []string {
 //
 // This is the only place the ticket is named. macswitcher used to carry its
 // own forwarder_proxy.ticket_file, which conflated two separate things: where
-// the ticket lives, and whether the proxy authenticates with it. alpaca finds
-// the ticket by itself and picks Negotiate or Basic per request, so only the
-// first question is left - and KerberosKeepAlive, which creates the file, is
-// the authority on it.
+// the ticket lives, and whether the proxy authenticates with it.
+// KerberosKeepAlive, which creates the file, is the authority on its location;
+// proxyEnv turns this path into KRB5CCNAME for alpaca's GSS integration.
 func kerberosCcacheFromKeepAlive() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

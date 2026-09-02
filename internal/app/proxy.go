@@ -211,11 +211,13 @@ func runProxy(cfgPath string) error {
 // its last-resort authentication method.
 //
 // alpaca tries Negotiate, then NTLM, then Basic, and drops any method it has
-// no credentials for. A Kerberos ticket is found on its own, so Negotiate
-// needs nothing from here - but when there is no valid ticket the chain used
-// to be empty and every request through the proxy failed. That is not
-// hypothetical: it is what a KDC that cannot be discovered leaves behind, and
-// it took the whole proxy down with it.
+// no credentials for. Its macOS GSS integration reads the default ccache, but
+// KerberosKeepAlive deliberately maintains a named FILE cache. Point GSS at
+// that file so a valid KKA ticket is actually usable for Negotiate.
+//
+// When there is no valid ticket the chain used to be empty and every request
+// through the proxy failed. That is not hypothetical: it is what a KDC that
+// cannot be discovered leaves behind, and it took the whole proxy down with it.
 //
 // Passing the Keychain password as BASIC_CREDENTIALS gives the chain a rung to
 // fall back to. Basic is slower (it authenticates per request) and weaker, so
@@ -231,6 +233,12 @@ func proxyEnv(cfg Config) ([]string, error) {
 	ctx, ok := cfg.Contexts[cfg.CurrentContext]
 	if !ok || !isForwardProxyMode(ctx.ProxyMode) || ctx.ForwarderProxy == nil {
 		return env, nil
+	}
+	if ccachePath := kerberosCcacheFromKeepAlive(); ccachePath != "" {
+		// ccache_path is a filesystem path in KerberosKeepAlive's config, not
+		// a KRB5CCNAME URI. Put this after os.Environ so an interactive shell's
+		// unrelated cache cannot override the one KKA refreshes.
+		env = replaceEnv(env, "KRB5CCNAME", "FILE:"+ccachePath)
 	}
 	fp := *ctx.ForwarderProxy
 	if fp.PasswordKeychainAccount == "" {
@@ -248,6 +256,17 @@ func proxyEnv(cfg Config) ([]string, error) {
 	}
 	// alpaca base64-encodes this itself; it wants the raw "user:password".
 	return append(env, "BASIC_CREDENTIALS="+fp.Username+":"+password), nil
+}
+
+func replaceEnv(env []string, name, value string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			out = append(out, entry)
+		}
+	}
+	return append(out, prefix+value)
 }
 
 // proxyLogPath is ~/Library/Logs/macswitcher.log - flat, named after the
