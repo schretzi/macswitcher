@@ -127,11 +127,45 @@ there would inherit the environment of the context being left. Nor does the
 list vary by context — an agent that consumes the proxy needs the restart in
 every context, including the one that turns the proxy off.
 
+### Bypassing the proxy
+
+There are four independent places a host can be excluded from the proxy, and
+they do not use the same syntax or apply in the same modes. Getting one of them
+right is usually not enough.
+
+| layer | reaches | applies in |
+| --- | --- | --- |
+| `NO_PROXY` (shell, Docker, launchd) | CLI tools and anything using Go/curl conventions | every mode |
+| macOS bypass list | GUI applications and browsers | every mode |
+| `filter_proxy.direct` | traffic through the filtering proxy | **`direct` mode only** |
+| the upstream PAC | traffic alpaca forwards | `forward` mode |
+
+Both `NO_PROXY` and the macOS bypass list are generated from a single
+`local_proxy.no_proxy` list, because keeping two hand-maintained lists in step
+is a losing game.
+
+The one that catches people out is `filter_proxy.direct`. The generated filter
+PAC is only in the path in `direct` mode (`filterProxyAppliesTo`) — in
+`forward` mode alpaca reads the *corporate* PAC instead, so an entry added
+there has no effect under VPN. It is the right place for hosts that must skip
+TLS inspection, and the wrong place for hosts that must skip the proxy.
+
+That is why the macOS bypass list is managed here rather than left to the
+upstream PAC: it works in every mode, needs no cooperation from a PAC file
+nobody controls, and preserves alpaca's automatic PAC refresh.
+
+Note the two syntaxes differ in a way that fails quietly. Go matches
+`no_proxy` entries against domain *labels*, so `kiac` covers `kiac` and
+`*.kiac` — but not `gtt.apps.main.kiac.example.net`, which needs its own
+`.kiac.example.net` entry. `networksetup` matches literally unless there is a
+`*`, so each name is written out in both forms.
+
 `proxy_mode` accepts exactly three values:
 
-- `off` — removes all proxy configuration (system network services, the
-  `~/.zsh/rcs/proxy` shell env file, Docker's `~/.docker/config.json`, and the
-  launchd environment) and stops the local proxy service.
+- `off` — removes all proxy configuration (system network services, the macOS
+  bypass list, the `~/.zsh/rcs/proxy` shell env file, Docker's
+  `~/.docker/config.json`, and the launchd environment) and stops the local
+  proxy service.
 - `direct` (default) — points system settings at the local proxy, and the
   local proxy reaches the internet directly. Any `forwarder_proxy` block is
   ignored in this mode.

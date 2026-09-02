@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,6 +48,10 @@ func setLocalProxy(cfgPath string) error {
 			return err
 		}
 	}
+	// Non-fatal: see updateProxyBypassDomains.
+	if err := updateProxyBypassDomains(services, proxyBypassDomains(cfg.LocalProxy.NoProxy)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 	// Empty unless the filtering proxy is in the path for this context, which
 	// is what turns PROXY_STATE from "on" into "filtered".
 	filterAddr := ""
@@ -87,6 +92,12 @@ func unsetLocalProxy(cfgPath string) error {
 			return err
 		}
 	}
+	// Back to what macOS ships. The list is inert while the proxy is off, but
+	// leaving macswitcher's entries behind would strand configuration that
+	// nothing maintains any more.
+	if err := updateProxyBypassDomains(services, defaultProxyBypassDomains); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 	if err := updateZshProxy(proxyURL, noProxy, false, ""); err != nil {
 		return err
 	}
@@ -105,6 +116,86 @@ func proxyEnvValues(cfg Config) (string, string) {
 	proxyURL := fmt.Sprintf("http://%s:%d", cfg.LocalProxy.Host, cfg.LocalProxy.Port)
 	noProxy := strings.Join(cfg.LocalProxy.NoProxy, ",")
 	return proxyURL, noProxy
+}
+
+// macOS ships these two in every service's bypass list: *.local for mDNS and
+// 169.254/16 for link-local. They are not in no_proxy because Go's matching
+// understands neither, so they are re-added unconditionally rather than lost
+// the first time macswitcher writes the list.
+var defaultProxyBypassDomains = []string{"*.local", "169.254/16"}
+
+// proxyBypassDomains converts no_proxy into the syntax
+// `networksetup -setproxybypassdomains` expects.
+//
+// This is the fourth and least obvious layer of proxy exclusion, and the only
+// one that reaches GUI applications: browsers and Cocoa apps read the system
+// bypass list and never see NO_PROXY. It also works in every proxy mode, which
+// filter_proxy.direct does not - that PAC is only in the path in direct mode
+// (see filterProxyAppliesTo), so under VPN a browser would otherwise send an
+// internal host to the corporate proxy, which cannot route to it.
+//
+// The two syntaxes differ in a way that silently breaks things: Go matches
+// `kiac` against domain labels, so it covers `kiac` and `*.kiac`, whereas
+// networksetup matches literally unless there is a `*`. Each name therefore
+// becomes both the bare form and a `*.` wildcard. IP literals and CIDR blocks
+// are passed through untouched - a wildcard on those means nothing.
+func proxyBypassDomains(noProxy []string) []string {
+	out := make([]string, 0, len(noProxy)*2+len(defaultProxyBypassDomains))
+	seen := make(map[string]bool)
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+
+	for _, d := range defaultProxyBypassDomains {
+		add(d)
+	}
+
+	for _, entry := range noProxy {
+		e := strings.TrimSpace(entry)
+		if e == "" || e == "*" {
+			continue
+		}
+		if strings.HasPrefix(e, "*") {
+			add(e)
+			continue
+		}
+		bare := strings.TrimPrefix(e, ".")
+		if bare == "" {
+			continue
+		}
+		add(bare)
+		// An address is never a parent domain, so a wildcard would only add
+		// an entry that can never match.
+		if net.ParseIP(bare) != nil || strings.Contains(bare, "/") {
+			continue
+		}
+		add("*." + bare)
+	}
+	return out
+}
+
+// updateProxyBypassDomains publishes the bypass list to every managed network
+// service. Non-fatal by contract: the caller warns and carries on, because a
+// browser that goes through the proxy is a smaller problem than a half
+// configured network - the same reasoning as updateLaunchdProxy.
+func updateProxyBypassDomains(services, domains []string) error {
+	if len(domains) == 0 {
+		// networksetup takes "Empty" to mean "clear the list"; passing no
+		// arguments at all is a usage error.
+		domains = []string{"Empty"}
+	}
+	var errs []error
+	for _, svc := range services {
+		args := append([]string{"-setproxybypassdomains", svc}, domains...)
+		if err := runCommand("networksetup", args...); err != nil {
+			errs = append(errs, fmt.Errorf("set proxy bypass domains for %q: %w", svc, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func resolveNetworkServices(cfg Config) ([]string, error) {

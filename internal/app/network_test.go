@@ -275,3 +275,64 @@ func TestSearchDomainArgsUnknownContextClears(t *testing.T) {
 		t.Errorf("searchDomainArgs() = %v, want %v", got, want)
 	}
 }
+
+func TestProxyBypassDomains(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		noProxy []string
+		want    []string
+	}{
+		{
+			name:    "empty no_proxy still yields the macOS defaults",
+			noProxy: nil,
+			want:    []string{"*.local", "169.254/16"},
+		},
+		{
+			// The regression this whole mechanism exists for: a browser under
+			// VPN must reach the Gateway hosts directly.
+			name:    "domain entries gain a wildcard as well as the bare name",
+			noProxy: []string{"kiac", ".kiac.schretzi.net"},
+			want: []string{
+				"*.local", "169.254/16",
+				"kiac", "*.kiac",
+				"kiac.schretzi.net", "*.kiac.schretzi.net",
+			},
+		},
+		{
+			name:    "addresses and CIDR blocks get no wildcard",
+			noProxy: []string{"127.0.0.1", "::1", "10.0.0.0/8"},
+			want: []string{
+				"*.local", "169.254/16",
+				"127.0.0.1", "::1", "10.0.0.0/8",
+			},
+		},
+		{
+			name:    "already wildcarded entries pass through once",
+			noProxy: []string{"*.ts.net", "*.local"},
+			want:    []string{"*.local", "169.254/16", "*.ts.net"},
+		},
+		{
+			name:    "blank and bare-dot entries are dropped",
+			noProxy: []string{"  ", ".", "*", " kubernetes "},
+			want:    []string{"*.local", "169.254/16", "kubernetes", "*.kubernetes"},
+		},
+		{
+			name:    "duplicates collapse",
+			noProxy: []string{"kiac", "kiac", ".kiac"},
+			want:    []string{"*.local", "169.254/16", "kiac", "*.kiac"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := proxyBypassDomains(tc.noProxy)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("proxyBypassDomains(%q) = %q, want %q", tc.noProxy, got, tc.want)
+			}
+		})
+	}
+}
