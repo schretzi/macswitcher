@@ -134,6 +134,96 @@ func updateDockerProxy(proxyURL, noProxy string, enable bool) error {
 	return os.WriteFile(dockerConfig, append(b, '\n'), 0o600)
 }
 
+// proxyEnvNames are the variables published to launchd, in the order they are
+// written. Both cases are set because Go's http.ProxyFromEnvironment accepts
+// either, but other runtimes in this setup are not so tolerant - curl reads
+// only the lowercase spelling, and some Python tooling only the uppercase.
+//
+// HTTP_PROXY is deliberately absent in its lowercase form's usual company:
+// CGI environments treat lowercase http_proxy as attacker-controlled, but a
+// launchd agent is not a CGI, so the pair is safe here.
+var proxyEnvNames = []struct{ proxy, noProxy string }{
+	{proxy: "HTTP_PROXY", noProxy: "NO_PROXY"},
+	{proxy: "HTTPS_PROXY", noProxy: ""},
+	{proxy: "http_proxy", noProxy: "no_proxy"},
+	{proxy: "https_proxy", noProxy: ""},
+}
+
+// Stubbed in tests.
+var runLaunchctl = func(args ...string) error { return runCommand("launchctl", args...) }
+
+// updateLaunchdProxy publishes the proxy environment into the user's launchd
+// GUI domain. This is the only way an agent started by launchd can see it:
+// launchd does not source the shell's rc files, so an agent inherits an
+// environment holding little more than PATH - the ~/.zsh/rcs/proxy file that
+// updateZshProxy writes is invisible to it.
+//
+// The failure this fixes is not obviously a proxy failure. A Go program whose
+// transport has no proxy resolves the target host itself and reports
+// "no such host", which reads like broken DNS; with a proxy it never resolves
+// the name at all and hands it to the proxy instead. tunneling's IAP dialer
+// failing every tunnel with `lookup oauth2.googleapis.com: no such host`,
+// while the same binary worked from a shell, is what this is for.
+//
+// Two limits worth knowing. launchctl setenv only reaches processes started
+// *after* it runs, so a context switch has to restart the agents that care -
+// that is what apps.restart is for. And Go caches the environment on the
+// first ProxyFromEnvironment call, so even a live agent would not pick up a
+// change without restarting. Both point the same way: list the agent in
+// apps.restart rather than expecting it to notice.
+//
+// Non-fatal by design. Every other step here writes a file in the user's own
+// home and effectively cannot fail, but launchctl needs a GUI domain to talk
+// to; over SSH there is none. Aborting the switch there would leave the
+// network half-configured, which is worse than an agent missing its proxy.
+func updateLaunchdProxy(proxyURL, noProxy string, enable bool) error {
+	if noProxy == "" {
+		noProxy = "localhost," + loopbackLocal + "," + loopbackIPv6
+	}
+	for _, name := range proxyEnvNames {
+		vars := []struct{ key, value string }{{key: name.proxy, value: proxyURL}}
+		if name.noProxy != "" {
+			vars = append(vars, struct{ key, value string }{key: name.noProxy, value: noProxy})
+		}
+		for _, v := range vars {
+			var err error
+			if enable {
+				err = runLaunchctl("setenv", v.key, v.value)
+			} else {
+				err = runLaunchctl("unsetenv", v.key)
+			}
+			if err != nil {
+				return fmt.Errorf("publish %s to launchd: %w", v.key, err)
+			}
+		}
+	}
+	return nil
+}
+
+// restartProxyConsumers restarts the agents named in local_proxy.restart_agents
+// so they pick up the environment updateLaunchdProxy just published.
+//
+// Best effort per agent, and it keeps going after a failure: these are
+// conveniences layered on top of a network change that has already succeeded,
+// and one agent refusing to restart is no reason to report the switch itself
+// as failed.
+func restartProxyConsumers(cfg Config) {
+	for _, name := range cfg.LocalProxy.RestartAgents {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		commands, ok := cfg.Applications[name]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "warning: local_proxy.restart_agents names %q, which is not defined under applications\n", name)
+			continue
+		}
+		if err := runApplicationAction(name, actionRestart, commands); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not restart %q for the new proxy environment: %v\n", name, err)
+		}
+	}
+}
+
 func syncContextApplications(cfg Config, ctx SwitchContext) error {
 	actions := []struct {
 		name         string

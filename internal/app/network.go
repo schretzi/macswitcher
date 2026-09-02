@@ -59,6 +59,12 @@ func setLocalProxy(cfgPath string) error {
 	if err := updateDockerProxy(proxyURL, noProxy, true); err != nil {
 		return err
 	}
+	// Non-fatal: an agent without its proxy is a smaller problem than a
+	// half-configured network. See updateLaunchdProxy.
+	if err := updateLaunchdProxy(proxyURL, noProxy, true); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	restartProxyConsumers(cfg)
 	fmt.Println("local proxy set")
 	return nil
 }
@@ -87,6 +93,10 @@ func unsetLocalProxy(cfgPath string) error {
 	if err := updateDockerProxy("", "", false); err != nil {
 		return err
 	}
+	if err := updateLaunchdProxy("", "", false); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	restartProxyConsumers(cfg)
 	fmt.Println("local proxy unset")
 	return nil
 }

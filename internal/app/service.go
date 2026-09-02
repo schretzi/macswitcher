@@ -93,7 +93,13 @@ func runCommand(name string, args ...string) error {
 	return nil
 }
 
-func runCommandList(parts []string) error {
+// Indirected through a var so tests can observe what a restart would run
+// without executing it.
+var runCommandListFn = runCommandListExec
+
+func runCommandList(parts []string) error { return runCommandListFn(parts) }
+
+func runCommandListExec(parts []string) error {
 	if len(parts) == 0 {
 		return errors.New("empty command")
 	}

@@ -90,11 +90,48 @@ and start applications for every context change. If an application has no
 explicit `restart` or `reload` command, but has both `stop` and `start`
 commands, those are used as a fallback.
 
+### The launchd environment
+
+Setting the proxy also publishes it into the user's launchd GUI domain with
+`launchctl setenv`, alongside the system, shell and Docker settings.
+
+This exists because launchd does not source the shell's rc files. A LaunchAgent
+starts with an environment holding little more than `PATH`, so the
+`~/.zsh/rcs/proxy` file every interactive shell reads is invisible to it — an
+agent that works perfectly when you run it by hand fails as a background job,
+which is a confusing way to find out.
+
+It is worth knowing what that failure looks like. A Go program whose transport
+has no proxy resolves the target host itself; with a proxy it never resolves
+the name at all and hands it to the proxy instead. So a missing proxy surfaces
+as `lookup oauth2.googleapis.com: no such host` — a DNS error for a problem
+that has nothing to do with DNS.
+
+`launchctl setenv` only reaches processes started *after* it runs, and Go
+caches the environment on its first `http.ProxyFromEnvironment` call, so a
+running agent cannot pick up a change either way. Agents that consume the proxy
+therefore have to be restarted, and are named in `local_proxy.restart_agents`:
+
+```yaml
+local_proxy:
+  host: 127.0.0.1
+  port: 3128
+  restart_agents:
+    - tunneling
+```
+
+Each entry names an `applications` key and is restarted after the proxy is
+applied. That is deliberately not a context's `apps.restart` list: those run
+early in a switch, before DNS and long before the proxy, so an agent restarted
+there would inherit the environment of the context being left. Nor does the
+list vary by context — an agent that consumes the proxy needs the restart in
+every context, including the one that turns the proxy off.
+
 `proxy_mode` accepts exactly three values:
 
 - `off` — removes all proxy configuration (system network services, the
-  `~/.zsh/rcs/proxy` shell env file, and Docker's `~/.docker/config.json`) and
-  stops the local proxy service.
+  `~/.zsh/rcs/proxy` shell env file, Docker's `~/.docker/config.json`, and the
+  launchd environment) and stops the local proxy service.
 - `direct` (default) — points system settings at the local proxy, and the
   local proxy reaches the internet directly. Any `forwarder_proxy` block is
   ignored in this mode.

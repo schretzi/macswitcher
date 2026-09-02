@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +106,79 @@ func TestWaitForVPNGivesUpOnAnInterfaceThatNeverAppears(t *testing.T) {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("waitForVPN did not give up on an interface that never appears")
+	}
+}
+
+func TestUpdateLaunchdProxyPublishesBothCases(t *testing.T) {
+	var got [][]string
+	orig := runLaunchctl
+	runLaunchctl = func(args ...string) error {
+		got = append(got, args)
+		return nil
+	}
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	if err := updateLaunchdProxy("http://127.0.0.1:3128", "localhost,kubernetes", true); err != nil {
+		t.Fatalf("updateLaunchdProxy: %v", err)
+	}
+
+	want := [][]string{
+		{"setenv", "HTTP_PROXY", "http://127.0.0.1:3128"},
+		{"setenv", "NO_PROXY", "localhost,kubernetes"},
+		{"setenv", "HTTPS_PROXY", "http://127.0.0.1:3128"},
+		{"setenv", "http_proxy", "http://127.0.0.1:3128"},
+		{"setenv", "no_proxy", "localhost,kubernetes"},
+		{"setenv", "https_proxy", "http://127.0.0.1:3128"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("launchctl calls:\ngot  %v\nwant %v", got, want)
+	}
+}
+
+func TestUpdateLaunchdProxyUnsetsEveryVariable(t *testing.T) {
+	var got []string
+	orig := runLaunchctl
+	runLaunchctl = func(args ...string) error {
+		if args[0] != "unsetenv" {
+			t.Errorf("expected unsetenv, got %q", args[0])
+		}
+		got = append(got, args[1])
+		return nil
+	}
+	t.Cleanup(func() { runLaunchctl = orig })
+
+	if err := updateLaunchdProxy("", "", false); err != nil {
+		t.Fatalf("updateLaunchdProxy: %v", err)
+	}
+
+	want := []string{"HTTP_PROXY", "NO_PROXY", "HTTPS_PROXY", "http_proxy", "no_proxy", "https_proxy"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unset variables:\ngot  %v\nwant %v", got, want)
+	}
+}
+
+// A restart_agents entry naming something absent from `applications` must warn
+// rather than abort: the proxy is already applied by this point, and failing
+// the switch would misreport a network change that in fact succeeded.
+func TestRestartProxyConsumersSkipsUnknownAgent(t *testing.T) {
+	orig := runCommandListFn
+	var ran [][]string
+	runCommandListFn = func(cmd []string) error {
+		ran = append(ran, cmd)
+		return nil
+	}
+	t.Cleanup(func() { runCommandListFn = orig })
+
+	cfg := Config{
+		LocalProxy: LocalProxyConfig{RestartAgents: []string{"tunneling", "nonexistent", ""}},
+		Applications: map[string]ApplicationCommands{
+			"tunneling": {Restart: []string{"tunneling", "service", "restart"}},
+		},
+	}
+	restartProxyConsumers(cfg)
+
+	want := [][]string{{"tunneling", "service", "restart"}}
+	if !reflect.DeepEqual(ran, want) {
+		t.Fatalf("commands run:\ngot  %v\nwant %v", ran, want)
 	}
 }

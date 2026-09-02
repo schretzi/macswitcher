@@ -29,6 +29,21 @@ type LocalProxyConfig struct {
 	Host    string   `yaml:"host" mapstructure:"host"`
 	Port    int      `yaml:"port" mapstructure:"port"`
 	NoProxy []string `yaml:"no_proxy" mapstructure:"no_proxy"`
+	// RestartAgents names entries in `applications` that read their proxy
+	// from the launchd environment and therefore cannot notice a change on
+	// their own. They are restarted after the proxy is applied, which is the
+	// only point at which the new environment exists.
+	//
+	// This is deliberately not a per-context apps.restart list. Those run
+	// early in a switch - before DNS and long before the proxy - so an agent
+	// restarted there would inherit the environment of the context being left.
+	// It also does not vary by context: an agent that consumes the proxy needs
+	// the restart in every context, including the one that turns the proxy off.
+	//
+	// Restarting is required rather than merely convenient: Go caches the
+	// environment on its first http.ProxyFromEnvironment call, so even a
+	// running process that could see the new value would not use it.
+	RestartAgents []string `yaml:"restart_agents,omitempty" mapstructure:"restart_agents"`
 }
 
 // FilterProxyConfig is the local URL-filtering proxy alpaca forwards to in
