@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func readProxyRC(t *testing.T) string {
@@ -62,5 +63,47 @@ func TestUpdateZshProxyOffClearsTheFilter(t *testing.T) {
 	}
 	if !strings.Contains(rc, `export PROXY_FILTER=""`) {
 		t.Errorf("disabled proxy should not name a filter:\n%s", rc)
+	}
+}
+
+// waitForVPN is only meaningful when a context names the tunnel's interface,
+// and it must not stall a switch that has no VPN to wait for.
+func TestWaitForVPNReturnsWithoutAnInterfaceConfigured(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan struct{})
+	go func() {
+		waitForVPN(Config{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitForVPN blocked although no VPN interface is configured")
+	}
+}
+
+// A tunnel that never appears must not hold a switch open forever: waitForVPN
+// warns and lets the switch carry on to checkDNSResolution, which is what
+// actually decides whether it worked.
+func TestWaitForVPNGivesUpOnAnInterfaceThatNeverAppears(t *testing.T) {
+	origTimeout, origPoll := vpnUpTimeout, vpnUpPollInterval
+	vpnUpTimeout, vpnUpPollInterval = 50*time.Millisecond, time.Millisecond
+	t.Cleanup(func() {
+		vpnUpTimeout, vpnUpPollInterval = origTimeout, origPoll
+	})
+
+	cfg := Config{}
+	cfg.Daemons.VPN.Interface = "utun-macswitcher-test-absent"
+
+	done := make(chan struct{})
+	go func() {
+		waitForVPN(cfg)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("waitForVPN did not give up on an interface that never appears")
 	}
 }

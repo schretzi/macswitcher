@@ -45,11 +45,23 @@ dns:
   network_services: []
   resolvers:
     - 127.0.0.2
+  # Optional. The name a switch resolves to decide whether DNS came up.
+  check_host: intranet-host.example.com
 proxy_mode: direct
 apps:
   reload:
     - unbound
 ```
+
+`dns.check_host` overrides the name a switch resolves to prove DNS is working
+before it goes any further. The defaults are the forward proxy's own hostname
+in `forward` mode and `google.com` otherwise, and both assume the network
+resolves public names — which a corporate network reached over a VPN need not
+do. Where its resolvers serve the intranet only, `google.com` tests something
+the network was never going to answer, and a switch that in fact worked is
+reported as failed. Point `check_host` at an intranet name that is always
+resolvable on the network the context describes. An explicit value wins over
+the forward proxy's hostname.
 
 The global and context configuration files use YAML. Runtime context selection
 is kept separately in `state.json`; Docker's own `~/.docker/config.json` also

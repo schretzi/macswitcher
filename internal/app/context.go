@@ -37,16 +37,22 @@ func switchContext(cfgPath string, args []string) error {
 // so a failed switch can be undone by applying the previous context with the
 // same code path - see rollbackContext.
 //
-// Order matters, and not in the obvious way:
+// Order matters, and not in the obvious way. Every step below depends on DNS
+// still working, so nothing may break DNS before the thing that repairs it has
+// run:
 //
 //   - The runtime state is written first because setLocalProxy, unsetLocalProxy
 //     and the proxy service all read the current context back off disk to
 //     decide whether the filtering proxy is in the path.
-//   - Applications run *before* checkDNSResolution. A forward context reaches
-//     its corporate proxy's name only through the VPN, and the VPN is one of
-//     these applications: checking DNS first made such a context impossible to
-//     switch into from a machine with no tunnel up. It also means the filtering
-//     proxy is already listening by the time the system proxy is pointed at it.
+//   - Applications run before the upstreams change. A VPN has to resolve its
+//     own gateway to connect, and it can only do that through the resolvers of
+//     the network the machine is still on. Pointing AdGuard at the new
+//     context's upstreams first is what made a forward context unswitchable:
+//     those resolvers live behind the very tunnel that then could not come up,
+//     leaving openconnect with "getaddrinfo failed for host puma...".
+//   - The upstreams and resolvers change once the tunnel that reaches them
+//     exists, and only then is DNS checked - by which point the forward proxy's
+//     own name is resolvable.
 //   - The proxy is changed last, so anything that fails above leaves the
 //     machine on the proxy settings it already had rather than half-way onto
 //     new ones.
@@ -61,6 +67,9 @@ func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string) er
 			fmt.Printf("warning: could not switch macOS network location: %v\n", err)
 		}
 	}
+	if err := syncContextApplications(cfg, ctx); err != nil {
+		return err
+	}
 	if len(ctx.Upstreams) > 0 {
 		if err := syncAdGuardUpstreams(cfg, ctx.Upstreams, name); err != nil {
 			return err
@@ -70,9 +79,6 @@ func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string) er
 		return err
 	}
 	flushDNSCache()
-	if err := syncContextApplications(cfg, ctx); err != nil {
-		return err
-	}
 	if err := checkDNSResolution(ctx); err != nil {
 		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`", err, name)
 	}

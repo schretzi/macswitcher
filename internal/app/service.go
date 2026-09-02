@@ -101,7 +101,14 @@ func runCommandList(parts []string) error {
 }
 
 func runCommandOutput(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	return runCommandOutputTimeout(commandTimeout, name, args...)
+}
+
+// runCommandOutputTimeout is runCommandOutput with the timeout spelled out, for
+// callers that poll: a probe repeated on a schedule has to give up well inside
+// commandTimeout or the retry never gets a second attempt.
+func runCommandOutputTimeout(timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- args are macswitcher-internal command definitions from trusted config/system calls, not raw user input

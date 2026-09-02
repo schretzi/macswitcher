@@ -56,6 +56,85 @@ func TestCheckDNSResolutionForwardModeRequiresProxyServer(t *testing.T) {
 	}
 }
 
+// Which name proves DNS works is the whole point of dns.check_host: a network
+// whose resolvers serve the intranet only cannot answer either default, so a
+// context that sets it must have it used in preference to both.
+func TestDNSCheckHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ctx     SwitchContext
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "defaults to google.com",
+			ctx:  SwitchContext{ProxyMode: ProxyModeDirect},
+			want: "google.com",
+		},
+		{
+			name: "forward mode uses the proxy's own hostname",
+			ctx: SwitchContext{
+				ProxyMode:      ProxyModeForward,
+				ForwarderProxy: &ForwarderProxyConfig{ProxyServer: "proxy.example.com"},
+			},
+			want: "proxy.example.com",
+		},
+		{
+			name: "check_host overrides the default",
+			ctx: SwitchContext{
+				ProxyMode: ProxyModeOff,
+				DNS:       ContextDNSConfig{CheckHost: "intranet.example.com"},
+			},
+			want: "intranet.example.com",
+		},
+		{
+			name: "check_host also overrides the forward proxy's hostname",
+			ctx: SwitchContext{
+				ProxyMode:      ProxyModeForward,
+				ForwarderProxy: &ForwarderProxyConfig{ProxyServer: "proxy.example.com"},
+				DNS:            ContextDNSConfig{CheckHost: "intranet.example.com"},
+			},
+			want: "intranet.example.com",
+		},
+		{
+			name: "surrounding whitespace is not a value",
+			ctx: SwitchContext{
+				ProxyMode: ProxyModeDirect,
+				DNS:       ContextDNSConfig{CheckHost: "   "},
+			},
+			want: "google.com",
+		},
+		{
+			name: "forward mode without a proxy_server is an error",
+			ctx: SwitchContext{
+				ProxyMode:      ProxyModeForward,
+				ForwarderProxy: &ForwarderProxyConfig{},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := dnsCheckHost(tt.ctx)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("dnsCheckHost() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dnsCheckHost(): %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("dnsCheckHost() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // checkDNSResolution retries so that a forward context's VPN has time to bring
 // its resolvers up. The retry must still give up: a name that never resolves
 // has to end the switch rather than spin forever.

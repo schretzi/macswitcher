@@ -75,6 +75,14 @@ type DNSConfig struct {
 type ContextDNSConfig struct {
 	NetworkServices []string `yaml:"network_services" mapstructure:"network_services"`
 	Resolvers       []string `yaml:"resolvers" mapstructure:"resolvers"`
+	// CheckHost overrides the name a switch resolves to decide whether DNS
+	// works. The defaults - google.com, or the forward proxy's own hostname -
+	// both assume the network resolves public names, and a corporate network
+	// reached over a VPN does not have to: its resolvers may serve the
+	// intranet only, which makes google.com a test of the wrong thing and
+	// fails a switch that in fact worked. Point this at an intranet name that
+	// is always resolvable on the network the context describes.
+	CheckHost string `yaml:"check_host,omitempty" mapstructure:"check_host"`
 }
 
 type AlpacaConfig struct {

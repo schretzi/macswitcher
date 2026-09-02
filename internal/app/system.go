@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // updateZshProxy rewrites ~/.zsh/rcs/proxy, the file the shell sources for
@@ -152,9 +153,54 @@ func syncContextApplications(cfg Config, ctx SwitchContext) error {
 			if err := runApplicationAction(name, action.name, cfg.Applications[name]); err != nil {
 				return err
 			}
+			if name == appVPN && action.name != actionStop {
+				waitForVPN(cfg)
+			}
 		}
 	}
 	return nil
+}
+
+// How long waitForVPN gives the tunnel, and how often it looks.
+var (
+	vpnUpTimeout      = 60 * time.Second
+	vpnUpPollInterval = time.Second
+)
+
+// waitForVPN blocks until the VPN's interface has an address, which is the
+// only signal that the tunnel actually negotiated - starting the agent merely
+// means launchd accepted the job.
+//
+// The wait is what keeps the rest of the switch off a half-open tunnel. The
+// step right after this points AdGuard Home at the context's upstreams, and
+// for a VPN context those resolvers live inside the tunnel; racing openconnect
+// to them takes DNS down while openconnect is still resolving its own gateway
+// through it.
+//
+// Not fatal on timeout. A tunnel that is slow but coming is common enough that
+// aborting here would be worse than continuing - and checkDNSResolution
+// further down is the check that actually decides whether the switch worked.
+func waitForVPN(cfg Config) {
+	iface := strings.TrimSpace(cfg.Daemons.VPN.Interface)
+	if iface == "" {
+		return
+	}
+	if up, _ := vpnInterfaceStatus(iface); up {
+		return
+	}
+	fmt.Printf("waiting for the VPN tunnel on %s (up to %s)...\n", iface, vpnUpTimeout)
+	deadline := time.Now().Add(vpnUpTimeout)
+	for {
+		if up, detail := vpnInterfaceStatus(iface); up {
+			fmt.Println(detail)
+			return
+		}
+		if !time.Now().Before(deadline) {
+			fmt.Printf("warning: the VPN tunnel on %s did not come up within %s; continuing anyway\n", iface, vpnUpTimeout)
+			return
+		}
+		time.Sleep(vpnUpPollInterval)
+	}
 }
 
 func runApplicationAction(name, action string, commands ApplicationCommands) error {

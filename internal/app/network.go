@@ -11,12 +11,16 @@ import (
 	"time"
 )
 
-// How long checkDNSResolution keeps retrying, and how often. Sized for a VPN
-// tunnel coming up: launchd returns as soon as the agent is started, but the
-// tunnel's routes and resolvers land a few seconds later.
+// How long checkDNSResolution keeps retrying, how often, and how long a single
+// probe may take. Sized for a VPN tunnel coming up: launchd returns as soon as
+// the agent is started, but the tunnel's routes and resolvers land seconds
+// later. The per-probe timeout matters as much as the total: dscacheutil hangs
+// rather than fails when the resolvers it was just pointed at are unreachable,
+// so at commandTimeout a single wedged probe would eat the whole retry budget.
 var (
-	dnsResolveTimeout      = 45 * time.Second
+	dnsResolveTimeout      = 60 * time.Second
 	dnsResolvePollInterval = 2 * time.Second
+	dnsResolveProbeTimeout = 5 * time.Second
 )
 
 func setLocalProxy(cfgPath string) error {
@@ -181,26 +185,29 @@ func flushDNSCache() {
 }
 
 // checkDNSResolution verifies that DNS is actually working before the
-// switch proceeds any further: google.com for off/direct proxy modes, or the
-// forward proxy's own hostname for forward mode (since the rest of the
-// switch is pointless if the upstream proxy itself can't be resolved). It
-// shells out to dscacheutil rather than using net.LookupHost because release
+// switch proceeds any further. Which name proves that depends on the context:
+//
+//   - dns.check_host, when set. The only option that works on a network whose
+//     resolvers serve the intranet and nothing else, where both defaults below
+//     test something the network was never going to answer.
+//   - the forward proxy's own hostname, in forward mode, since the rest of the
+//     switch is pointless if the upstream proxy itself cannot be resolved.
+//   - google.com otherwise.
+//
+// It shells out to dscacheutil rather than using net.LookupHost because release
 // builds have CGO_ENABLED=0, so Go's resolver falls back to reading
 // /etc/resolv.conf, which macOS does not keep in sync with the resolvers set
 // via `networksetup -setdnsservers`.
 //
-// It retries until dnsResolveTimeout. A forward context starts its VPN in the
-// step immediately before this one, and launchd reporting the agent as
-// started says nothing about the tunnel's routes and resolvers being usable
-// yet - the corporate proxy's name only resolves once they are. Failing on
-// the first attempt would make such a context unswitchable.
+// It retries until dnsResolveTimeout. A context that starts a VPN does so in
+// the step before this one, and launchd reporting the agent as started says
+// nothing about the tunnel's routes and resolvers being usable yet - the names
+// this checks only resolve once they are. Failing on the first attempt would
+// make such a context unswitchable.
 func checkDNSResolution(ctx SwitchContext) error {
-	host := "google.com"
-	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
-		host = strings.TrimSpace(ctx.ForwarderProxy.ProxyServer)
-		if host == "" {
-			return errors.New("proxy_mode is forward but forwarder_proxy.proxy_server is empty")
-		}
+	host, err := dnsCheckHost(ctx)
+	if err != nil {
+		return err
 	}
 	deadline := time.Now().Add(dnsResolveTimeout)
 	for attempt := 1; ; attempt++ {
@@ -218,11 +225,29 @@ func checkDNSResolution(ctx SwitchContext) error {
 	}
 }
 
-// resolveHostOnce is a single resolution attempt. dscacheutil itself can hang
-// when the resolvers it was just pointed at are unreachable, in which case
-// runCommandOutput's timeout kills it and this reports the kill as the error.
+// dnsCheckHost picks the name checkDNSResolution proves DNS with. An explicit
+// dns.check_host wins over the forward proxy's hostname: a context sets it
+// precisely because the defaults do not hold on that network.
+func dnsCheckHost(ctx SwitchContext) (string, error) {
+	if host := strings.TrimSpace(ctx.DNS.CheckHost); host != "" {
+		return host, nil
+	}
+	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
+		host := strings.TrimSpace(ctx.ForwarderProxy.ProxyServer)
+		if host == "" {
+			return "", errors.New("proxy_mode is forward but forwarder_proxy.proxy_server is empty")
+		}
+		return host, nil
+	}
+	return "google.com", nil
+}
+
+// resolveHostOnce is a single resolution attempt. dscacheutil hangs rather
+// than fails when the resolvers it was just pointed at are unreachable, so the
+// probe is bounded well inside commandTimeout and a kill is reported as the
+// error - leaving the retry loop free to try again.
 func resolveHostOnce(host string) error {
-	out, err := runCommandOutput("dscacheutil", "-q", "host", "-a", "name", host)
+	out, err := runCommandOutputTimeout(dnsResolveProbeTimeout, "dscacheutil", "-q", "host", "-a", "name", host)
 	if err != nil {
 		return fmt.Errorf("dscacheutil -q host -a name %s failed: %w", host, err)
 	}
