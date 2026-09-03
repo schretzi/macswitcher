@@ -51,6 +51,9 @@ dns:
   search_domains:
     - corp.example.com
 proxy_mode: direct
+# Optional. Turns AdGuard Home's filtering on or off for this context.
+# Omit it and macswitcher leaves filtering exactly as it found it.
+protection_enabled: false
 apps:
   reload:
     - unbound
@@ -289,25 +292,29 @@ stores contexts under `contexts/`.
 
 1. Persist the selected context as current (survives even if later steps warn/fail).
 2. `scselect` the context's macOS network location, if set (warns, doesn't abort, on failure).
-3. Rewrite `unbound.forwarders_file` from the context's `unbound_forwarders`, if any.
-4. If forwarders were rewritten, restart unbound via `applications.unbound.restart`
-   (warns if that's not configured — a stale `forwarders.conf` load is a
-   common source of "it takes forever after switching" symptoms).
-5. Point the network services' DNS servers at `dns.local_resolver` (or the
+3. Run the context's app/VPN hooks, while the machine can still resolve names
+   through the network it is currently on.
+4. Rewrite AdGuard Home's `upstream_dns_file` from the context's `upstreams`,
+   if any, and restart it via `applications.adguardhome.restart` (warns if
+   that's not configured — a stale upstreams load is a common source of
+   "it takes forever after switching" symptoms).
+5. Apply the context's `protection_enabled`, if set — after the restart above,
+   which would otherwise undo it, and before the DNS check below, because on a
+   corporate network filtering is exactly what stops DNS from working.
+6. Point the network services' DNS servers at `dns.local_resolver` (or the
    context's `dns.resolvers` override).
-6. Flush the system DNS cache (`dscacheutil -flushcache` +
+7. Flush the system DNS cache (`dscacheutil -flushcache` +
    `killall -HUP mDNSResponder`, both via `sudo -n` — see below).
-7. **Verify DNS actually works** before touching the proxy: resolve
+8. **Verify DNS actually works** before touching the proxy: resolve
    `google.com` for `off`/`direct` modes, or the forward proxy's own
    `proxy_server` hostname for `forward` mode. If this fails, `switch` stops
    here with an error and a hint to fix DNS and rerun — none of the
    remaining steps (proxy service, app sync) can work with broken DNS
    anyway.
-8. Stop (if `proxy_mode: off`) or restart (otherwise) the Alpaca service,
+9. Stop (if `proxy_mode: off`) or restart (otherwise) the Alpaca service,
    then set or unset the local proxy accordingly.
-9. Run the context's `apps.stop`/`restart`/`reload`/`start` hooks.
 
-Steps 4 and 6 shell out to `sudo -n ...` (non-interactive), so they need
+Steps 7 and 8 shell out to `sudo -n ...` (non-interactive), so they need
 matching passwordless-sudo sudoers entries, e.g.:
 
 ```
@@ -316,8 +323,57 @@ your-user ALL=(root) NOPASSWD: /usr/bin/killall -HUP mDNSResponder
 your-user ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/net.unbound
 ```
 
-Without these, steps 4/6 just print a warning and `switch` continues; step 7
+Without these, steps 4/7 just print a warning and `switch` continues; step 8
 will then fail fast if DNS genuinely isn't working yet.
+
+### AdGuard Home filtering per context
+
+A context may carry `protection_enabled`, which turns AdGuard Home's filtering
+on or off as part of the switch. Leave it out and macswitcher does not touch
+filtering at all — the setting is three-state on purpose, so contexts written
+before it existed keep whatever the machine already had rather than silently
+losing their filtering.
+
+It exists because a corporate network puts the machine in a bootstrap
+deadlock. AdGuard Home wants to fetch its filter lists; that needs the proxy;
+the proxy needs DNS; and DNS *is* AdGuard Home. The office context came up with
+no working resolver at all, and the only way out was turning filtering off by
+hand in the web UI. Filtering there is redundant anyway — everything is
+forwarded to corporate systems that filter in their own right:
+
+```yaml
+# contexts/office.yaml
+proxy_mode: forward
+protection_enabled: false
+```
+
+This goes through AdGuard Home's HTTP API (`POST /control/protection`), not
+through `AdGuardHome.yaml`. That file belongs to the runtime — AdGuard Home
+rewrites it wholesale on every web-UI change and it sits in a `0700`
+root-owned prefix, so editing it would need `sudo` on every switch and would
+race the daemon. The API applies the change to the running process
+immediately, needs no restart (so the DNS cache survives), and AdGuard Home
+persists it itself.
+
+The call authenticates with an account from the System keychain, defaulting to
+the API account the Ansible role seeds rather than the human's web-UI login.
+Override any of it under `adguard:`:
+
+```yaml
+adguard:
+  upstreams_file: /etc/adguardhome/upstreams.conf
+  address: 127.0.0.3:3053
+  api_user: zonesync
+  api_keychain_service: adguardhome api
+```
+
+A failure here warns but never aborts a switch: failing to *disable* filtering
+breaks name resolution, which the DNS check catches moments later with a hint
+naming this setting, and failing to *enable* it costs filtering rather than
+connectivity — taking the network down over that would be the wrong trade.
+Neither passes unnoticed, because `macswitcher status` reports the requested
+state next to the daemon's live one, and `observe` calls out filtering that is
+off.
 
 ## Observe
 

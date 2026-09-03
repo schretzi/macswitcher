@@ -75,12 +75,18 @@ func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string) er
 			return err
 		}
 	}
+	// After the upstream sync, because that restarts AdGuard Home and a
+	// restart would drop a protection change made before it. Before the DNS
+	// check, because on a corporate network filtering is precisely what stops
+	// DNS from working - applying it afterwards would fail the switch at the
+	// check and never get here.
+	syncAdGuardProtection(cfg, ctx)
 	if err := applyLocalResolverDNS(cfg); err != nil {
 		return err
 	}
 	flushDNSCache()
 	if err := checkDNSResolution(ctx); err != nil {
-		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`", err, name)
+		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`%s", err, name, protectionHint(ctx))
 	}
 	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
 		if err := unsetLocalProxy(cfgPath); err != nil {
@@ -163,6 +169,7 @@ func status(cfgPath string) error {
 	fmt.Printf("filter_proxy: %s\n", filterProxyStatusLine(cfg, ctx))
 	fmt.Printf("local_resolver: %s\n", cfg.DNS.LocalResolver)
 	fmt.Printf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
+	fmt.Printf("adguard_filtering: %s\n", adguardProtectionStatusLine(cfg, ctx))
 	fmt.Printf("no_proxy: %s\n", noProxy)
 	fmt.Printf("network_services configured: %d (0 means auto-detect)\n", len(cfg.NetworkServices))
 	fmt.Println("service:")

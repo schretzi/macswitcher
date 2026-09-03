@@ -76,11 +76,25 @@ type SwitchContext struct {
 	// the same list now drives AdGuard Home's upstream_dns_file - a context
 	// still carrying the old key would switch networks without changing a
 	// single upstream, and nothing would say so.
-	UnboundForwardersRemoved []string              `yaml:"unbound_forwarders,omitempty" mapstructure:"unbound_forwarders"`
-	ProxyMode                string                `yaml:"proxy_mode" mapstructure:"proxy_mode"`
-	ForwarderProxy           *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
-	Alpaca                   *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
-	Apps                     LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
+	UnboundForwardersRemoved []string `yaml:"unbound_forwarders,omitempty" mapstructure:"unbound_forwarders"`
+	ProxyMode                string   `yaml:"proxy_mode" mapstructure:"proxy_mode"`
+	// ProtectionEnabled turns AdGuard Home's filtering on or off for this
+	// context. A POINTER on purpose: a plain bool cannot tell "the context
+	// says false" from "the context does not mention it", and the zero value
+	// would silently disable filtering on every context that predates this
+	// setting. nil means macswitcher leaves AdGuard Home's protection exactly
+	// as it found it.
+	//
+	// Why a context wants this at all: on a corporate network the filter
+	// lists are unreachable until the proxy works, the proxy needs DNS, and
+	// DNS is AdGuard Home - which is busy failing to reach those lists. The
+	// office context switched into that deadlock and came up with no working
+	// DNS at all. Filtering there is redundant anyway, since everything is
+	// forwarded to corporate systems that filter in their own right.
+	ProtectionEnabled *bool                 `yaml:"protection_enabled,omitempty" mapstructure:"protection_enabled"`
+	ForwarderProxy    *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
+	Alpaca            *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
+	Apps              LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
 }
 
 type DNSConfig struct {
@@ -134,6 +148,54 @@ type ApplicationCommands struct {
 // macswitcher's.
 type AdGuardConfig struct {
 	UpstreamsFile string `yaml:"upstreams_file" mapstructure:"upstreams_file"`
+	// Address is AdGuard Home's web/API listener, used to turn filtering on
+	// and off per context. Empty falls back to defaultAdGuardAddress.
+	//
+	// This is the API rather than an edit of AdGuardHome.yaml because that
+	// file belongs to the runtime - AdGuard Home rewrites it wholesale on
+	// every change made through the web UI, and it lives in a 0700
+	// root-owned prefix that would drag sudo into every switch. The API
+	// applies the change to the running process immediately and persists it
+	// itself.
+	Address string `yaml:"address,omitempty" mapstructure:"address"`
+	// APIUser and APIKeychainService locate the credential in the System
+	// keychain. Defaults match the account the Ansible role seeds for
+	// AdGuard Home's API, which is deliberately not the human's web-UI login:
+	// AdGuard Home has no permission model, so separate accounts buy
+	// credential isolation and independent rotation, not lower privilege.
+	APIUser            string `yaml:"api_user,omitempty" mapstructure:"api_user"`
+	APIKeychainService string `yaml:"api_keychain_service,omitempty" mapstructure:"api_keychain_service"`
+}
+
+// Defaults for AdGuardConfig, matching what the Ansible role installs.
+const (
+	defaultAdGuardAddress            = "127.0.0.3:3053"
+	defaultAdGuardAPIUser            = "zonesync"
+	defaultAdGuardAPIKeychainService = "adguardhome api"
+)
+
+// adguardAddress, adguardAPIUser and adguardAPIKeychainService apply the
+// defaults above without writing them into the config file, so a machine that
+// moves the web UI only has to say so once.
+func (a AdGuardConfig) adguardAddress() string {
+	if v := strings.TrimSpace(a.Address); v != "" {
+		return v
+	}
+	return defaultAdGuardAddress
+}
+
+func (a AdGuardConfig) adguardAPIUser() string {
+	if v := strings.TrimSpace(a.APIUser); v != "" {
+		return v
+	}
+	return defaultAdGuardAPIUser
+}
+
+func (a AdGuardConfig) adguardAPIKeychainService() string {
+	if v := strings.TrimSpace(a.APIKeychainService); v != "" {
+		return v
+	}
+	return defaultAdGuardAPIKeychainService
 }
 
 // DaemonConfig identifies a launchd agent that `macswitcher observe` can show

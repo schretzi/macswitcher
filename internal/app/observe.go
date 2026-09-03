@@ -207,6 +207,12 @@ func adguardDetail(cfg Config) []string {
 	if len(specific) > 0 {
 		lines = append(lines, fmt.Sprintf("per-domain: %d zone(s)", len(specific)))
 	}
+	// Filtering is only worth a line when it is off: that is the surprising
+	// state, and one that a context switch can cause without the operator
+	// having asked for it in this session.
+	if enabled, err := adguardProtectionEnabled(cfg); err == nil && !enabled {
+		lines = append(lines, "filtering: OFF")
+	}
 	return lines
 }
 
