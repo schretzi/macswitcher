@@ -271,7 +271,7 @@ var (
 // aborting here would be worse than continuing - and checkDNSResolution
 // further down is the check that actually decides whether the switch worked.
 func waitForVPN(cfg Config) {
-	iface := strings.TrimSpace(cfg.Daemons.VPN.Interface)
+	iface := strings.TrimSpace(cfg.Daemons[appVPN].Interface)
 	if iface == "" {
 		return
 	}

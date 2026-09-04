@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ const (
 	daemonKindTunneling
 	daemonKindPrivoxy
 	daemonKindLsrules
+	// daemonKindGeneric is any daemons: entry with no built-in status
+	// function - the "no dedicated code" path for a new daemon like kanata:
+	// plain launchd state plus, if configured, StatusCommand's output.
+	daemonKindGeneric
 )
 
 // daemonRow is one line of the observe TUI: a launchd agent plus the
@@ -35,6 +40,10 @@ type daemonRow struct {
 	label     string
 	scope     string
 	kind      daemonKind
+	// cfgDaemon is the full config entry, needed by the generic path
+	// (StatusCommand for detail, Start/Stop/RestartCommand for actions) and
+	// unused by the built-in-kind daemons above, which read cfg directly.
+	cfgDaemon DaemonConfig
 	status    daemonStatus
 	extra     []string
 }
@@ -72,25 +81,49 @@ func newObserveModel(cfg Config) observeModel {
 		// rather than from config: it is not something the user can point
 		// elsewhere.
 		{name: appAlpaca, configKey: "", label: launchAgentService().Label(), scope: daemonScopeUser, kind: daemonKindAlpaca},
-		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons.AdGuardHome.Label, scope: cfg.Daemons.AdGuardHome.Scope, kind: daemonKindAdGuard},
+		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons[appAdGuard].Label, scope: cfg.Daemons[appAdGuard].Scope, kind: daemonKindAdGuard, cfgDaemon: cfg.Daemons[appAdGuard]},
 		// apple/container + kiac: the cluster VMs take their DNS from the vmnet
 		// gateway, so this belongs next to the resolvers rather than at the end.
-		{name: appContainer, configKey: appContainer, label: cfg.Daemons.Container.Label, scope: cfg.Daemons.Container.Scope, kind: daemonKindContainer},
+		{name: appContainer, configKey: appContainer, label: cfg.Daemons[appContainer].Label, scope: cfg.Daemons[appContainer].Scope, kind: daemonKindContainer, cfgDaemon: cfg.Daemons[appContainer]},
 		// directly after alpaca: it is the hop alpaca forwards to in direct
 		// contexts, and the pair is only meaningful read together.
-		{name: appPrivoxy, configKey: appPrivoxy, label: cfg.Daemons.Privoxy.Label, scope: cfg.Daemons.Privoxy.Scope, kind: daemonKindPrivoxy},
-		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons.KerberosKeepAlive.Label, scope: cfg.Daemons.KerberosKeepAlive.Scope, kind: daemonKindKerberos},
-		{name: "omt", configKey: "omt", label: cfg.Daemons.OMT.Label, scope: cfg.Daemons.OMT.Scope, kind: daemonKindOMT},
-		{name: appVPN, configKey: appVPN, label: cfg.Daemons.VPN.Label, scope: cfg.Daemons.VPN.Scope, kind: daemonKindVPN},
+		{name: appPrivoxy, configKey: appPrivoxy, label: cfg.Daemons[appPrivoxy].Label, scope: cfg.Daemons[appPrivoxy].Scope, kind: daemonKindPrivoxy, cfgDaemon: cfg.Daemons[appPrivoxy]},
+		{name: "kerberoskeepalive", configKey: "kerberos_keep_alive", label: cfg.Daemons["kerberos_keep_alive"].Label, scope: cfg.Daemons["kerberos_keep_alive"].Scope, kind: daemonKindKerberos, cfgDaemon: cfg.Daemons["kerberos_keep_alive"]},
+		{name: "omt", configKey: "omt", label: cfg.Daemons["omt"].Label, scope: cfg.Daemons["omt"].Scope, kind: daemonKindOMT, cfgDaemon: cfg.Daemons["omt"]},
+		{name: appVPN, configKey: appVPN, label: cfg.Daemons[appVPN].Label, scope: cfg.Daemons[appVPN].Scope, kind: daemonKindVPN, cfgDaemon: cfg.Daemons[appVPN]},
 		// last: its gcp tunnels ride on whatever the rows above have set up
 		// (proxy, resolver, VPN), so a failure here is usually a symptom of
 		// one of them.
 		// next to tunneling at the end: both are services this machine runs
 		// for itself rather than parts of the network path.
-		{name: appLsrules, configKey: appLsrules, label: cfg.Daemons.Lsrules.Label, scope: cfg.Daemons.Lsrules.Scope, kind: daemonKindLsrules},
-		{name: "tunneling", configKey: "tunneling", label: cfg.Daemons.Tunneling.Label, scope: cfg.Daemons.Tunneling.Scope, kind: daemonKindTunneling},
+		{name: appLsrules, configKey: appLsrules, label: cfg.Daemons[appLsrules].Label, scope: cfg.Daemons[appLsrules].Scope, kind: daemonKindLsrules, cfgDaemon: cfg.Daemons[appLsrules]},
+		{name: "tunneling", configKey: "tunneling", label: cfg.Daemons["tunneling"].Label, scope: cfg.Daemons["tunneling"].Scope, kind: daemonKindTunneling, cfgDaemon: cfg.Daemons["tunneling"]},
 	}
+	rows = append(rows, genericDaemonRows(cfg)...)
 	return observeModel{cfg: cfg, rows: rows}
+}
+
+// genericDaemonRows turns any daemons: entry macswitcher has no built-in
+// daemonKind for (e.g. "kanata", added purely via config with no Go code
+// change) into rows, in alphabetical order after the built-in ones above.
+func genericDaemonRows(cfg Config) []daemonRow {
+	extraKeys := make([]string, 0, len(cfg.Daemons))
+	for key := range cfg.Daemons {
+		if !knownDaemonKeys[key] {
+			extraKeys = append(extraKeys, key)
+		}
+	}
+	sort.Strings(extraKeys)
+	rows := make([]daemonRow, 0, len(extraKeys))
+	for _, key := range extraKeys {
+		daemonCfg := cfg.Daemons[key]
+		rows = append(rows, daemonRow{
+			name: key, configKey: key,
+			label: daemonCfg.Label, scope: daemonCfg.Scope,
+			kind: daemonKindGeneric, cfgDaemon: daemonCfg,
+		})
+	}
+	return rows
 }
 
 func (m observeModel) Init() tea.Cmd {
@@ -151,6 +184,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return vpnDetail(cfg)
 	case daemonKindTunneling:
 		return tunnelingDetail()
+	case daemonKindGeneric:
+		return genericDetail(row.cfgDaemon)
 	default:
 		return nil
 	}
@@ -324,7 +359,7 @@ func tunnelingDetail() []string {
 }
 
 func vpnDetail(cfg Config) []string {
-	iface := strings.TrimSpace(cfg.Daemons.VPN.Interface)
+	iface := strings.TrimSpace(cfg.Daemons[appVPN].Interface)
 	if iface == "" {
 		return []string{"no tunnel interface configured (set daemons.vpn.interface to check connectivity)"}
 	}
@@ -420,7 +455,9 @@ func (m observeModel) refreshAllCmd() tea.Cmd {
 // currently selected row. User-scoped agents run unprivileged and silently;
 // system-scoped daemons need sudo, so the command runs interactively via
 // tea.ExecProcess, which hands the real terminal to it (letting sudo prompt
-// for a password) and suspends the TUI for the duration.
+// for a password) and suspends the TUI for the duration - unless the row
+// configures an override command for verb (DaemonConfig.StartCommand etc.),
+// in which case that runs instead; see systemDaemonActionCmd.
 func (m observeModel) actionCmd(verb string) tea.Cmd {
 	index := m.cursor
 	row := m.rows[index]
@@ -429,13 +466,18 @@ func (m observeModel) actionCmd(verb string) tea.Cmd {
 		return func() tea.Msg { return actionResultMsg{index: index, verb: verb, err: err} }
 	}
 	if normalizeDaemonScope(row.scope) == daemonScopeSystem {
-		cmd, err := systemDaemonActionCmd(verb, row.label)
+		cmd, err := systemDaemonActionCmd(verb, row.label, row.cfgDaemon)
 		if err != nil {
 			return func() tea.Msg { return actionResultMsg{index: index, verb: verb, err: err} }
 		}
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return actionResultMsg{index: index, verb: verb, err: err}
 		})
+	}
+	if override := daemonActionOverride(verb, row.cfgDaemon); strings.TrimSpace(override) != "" {
+		return func() tea.Msg {
+			return actionResultMsg{index: index, verb: verb, err: runDaemonOverrideCommand(override)}
+		}
 	}
 	var action func(label, scope string) error
 	switch verb {

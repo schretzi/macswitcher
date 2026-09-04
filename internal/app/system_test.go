@@ -94,8 +94,9 @@ func TestWaitForVPNGivesUpOnAnInterfaceThatNeverAppears(t *testing.T) {
 		vpnUpTimeout, vpnUpPollInterval = origTimeout, origPoll
 	})
 
-	cfg := Config{}
-	cfg.Daemons.VPN.Interface = "utun-macswitcher-test-absent"
+	cfg := Config{Daemons: map[string]DaemonConfig{
+		appVPN: {Interface: "utun-macswitcher-test-absent"},
+	}}
 
 	done := make(chan struct{})
 	go func() {

@@ -163,6 +163,11 @@ func TestPidRunsLastExitPatterns(t *testing.T) {
 	}
 }
 
+// A misspelt *field* is still a typo worth reporting: viper decodes it into
+// nothing, so the daemon ends up with an empty label and is silently
+// unmanaged. A misspelt daemon *name*, by contrast, is no longer an error -
+// daemons is a map, and any name is a valid entry that gets generic launchd
+// handling.
 func TestDaemonsConfigWarningsCatchesTypos(t *testing.T) {
 	t.Parallel()
 
@@ -183,11 +188,11 @@ daemons:
 		t.Fatalf("daemonsConfigWarnings() error = %v", err)
 	}
 	joined := strings.Join(warnings, "\n")
-	if !strings.Contains(joined, "daemons.kerberoskeepalive is not a recognized daemon") {
-		t.Fatalf("expected a warning about the unrecognized daemon key, got: %v", warnings)
+	if !strings.Contains(joined, "daemons.kerberoskeepalive.lable is not a recognized field") {
+		t.Fatalf("expected a warning about the misspelt field, got: %v", warnings)
 	}
-	if !strings.Contains(joined, "kerberos_keep_alive") {
-		t.Fatalf("expected the warning to mention the correct key kerberos_keep_alive, got: %v", warnings)
+	if !strings.Contains(joined, "label") {
+		t.Fatalf("expected the warning to list the valid fields, got: %v", warnings)
 	}
 }
 
@@ -223,14 +228,16 @@ daemons:
 	}
 }
 
-// The warning used to hand-list the valid keys and had drifted out of step
-// with knownDaemonKeys, telling people vpn was invalid when it was not.
-func TestDaemonsConfigWarningListsEveryKnownKey(t *testing.T) {
+// The field warning used to hand-list the valid fields and drifted out of
+// step with knownDaemonFields. An unknown daemon *name* is deliberately not
+// warned about: daemons is a map, so a name macswitcher has no built-in
+// detail function for is still observed and controllable.
+func TestDaemonsConfigWarningListsEveryKnownField(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("daemons:\n  nosuchdaemon:\n    label: x\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("daemons:\n  nosuchdaemon:\n    nosuchfield: x\n"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 	warnings, err := daemonsConfigWarnings(path)
@@ -238,10 +245,13 @@ func TestDaemonsConfigWarningListsEveryKnownKey(t *testing.T) {
 		t.Fatalf("daemonsConfigWarnings() error = %v", err)
 	}
 	joined := strings.Join(warnings, "\n")
-	for key := range knownDaemonKeys {
-		if !strings.Contains(joined, key) {
-			t.Errorf("warning does not mention the valid key %q: %v", key, warnings)
+	for field := range knownDaemonFields {
+		if !strings.Contains(joined, field) {
+			t.Errorf("warning does not mention the valid field %q: %v", field, warnings)
 		}
+	}
+	if strings.Contains(joined, "is not a recognized daemon") {
+		t.Errorf("an arbitrary daemon name should not warn: %v", warnings)
 	}
 }
 

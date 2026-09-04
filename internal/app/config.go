@@ -20,7 +20,7 @@ type Config struct {
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
 	AdGuard         AdGuardConfig                  `yaml:"adguard" mapstructure:"adguard"`
 	FilterProxy     FilterProxyConfig              `yaml:"filter_proxy" mapstructure:"filter_proxy"`
-	Daemons         DaemonsConfig                  `yaml:"daemons" mapstructure:"daemons"`
+	Daemons         map[string]DaemonConfig        `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
 	Contexts        map[string]SwitchContext       `yaml:"-" mapstructure:"-"`
 }
@@ -204,32 +204,45 @@ func (a AdGuardConfig) adguardAPIKeychainService() string {
 // standard per-scope path (e.g. installed by Homebrew or by an external
 // Ansible role). Leave Label empty to hide it from `observe` as "not
 // configured".
+//
+// Daemons is a map keyed by an arbitrary name (e.g. "adguardhome", or a
+// daemon macswitcher has no built-in knowledge of at all, like "kanata") so a
+// new daemon can be observed and controlled purely by adding an entry here -
+// no Go code change needed. A handful of names (see knownDaemonKeys in
+// daemons.go) additionally get a built-in, richer status line; anything else
+// falls back to plain launchd state plus, if configured, StatusCommand's
+// output.
 type DaemonConfig struct {
 	Label string `yaml:"label,omitempty" mapstructure:"label"`
 	// Scope is "user" (default): a per-user LaunchAgent loaded in the gui/<uid>
 	// domain from ~/Library/LaunchAgents/<label>.plist. Set to "system" for a
 	// LaunchDaemon loaded in the system domain from
 	// /Library/LaunchDaemons/<label>.plist; start/stop/enable/disable on a
-	// system-scoped daemon run under sudo with an interactive password prompt.
+	// system-scoped daemon run under sudo with an interactive password prompt,
+	// unless overridden below.
 	Scope string `yaml:"scope,omitempty" mapstructure:"scope"`
 	// Interface is optional and only used by the vpn row: a network
 	// interface name (e.g. "utun99") that observe checks for a live inet
 	// address, since a running VPN supervisor process doesn't guarantee the
 	// tunnel itself is actually up.
 	Interface string `yaml:"interface,omitempty" mapstructure:"interface"`
-}
-
-// DaemonsConfig lists the external daemons `macswitcher observe` can show,
-// beyond macswitcher's own Alpaca launch agent (always shown).
-type DaemonsConfig struct {
-	AdGuardHome       DaemonConfig `yaml:"adguardhome" mapstructure:"adguardhome"`
-	Container         DaemonConfig `yaml:"container" mapstructure:"container"`
-	KerberosKeepAlive DaemonConfig `yaml:"kerberos_keep_alive" mapstructure:"kerberos_keep_alive"`
-	OMT               DaemonConfig `yaml:"omt" mapstructure:"omt"`
-	VPN               DaemonConfig `yaml:"vpn" mapstructure:"vpn"`
-	Tunneling         DaemonConfig `yaml:"tunneling" mapstructure:"tunneling"`
-	Privoxy           DaemonConfig `yaml:"privoxy" mapstructure:"privoxy"`
-	Lsrules           DaemonConfig `yaml:"lsrules" mapstructure:"lsrules"`
+	// StatusCommand, if set, is run unprivileged (regardless of Scope) on
+	// every refresh; its stdout, split into lines, is shown as this daemon's
+	// extra detail in `observe` - e.g. "kanata --list" to report which
+	// keyboards a key remapper currently sees. Only used for daemons with no
+	// built-in detail function (see knownDaemonKeys).
+	StatusCommand string `yaml:"status_command,omitempty" mapstructure:"status_command"`
+	// StartCommand, StopCommand, RestartCommand, if set, replace the default
+	// launchctl bootstrap/bootout invocation `observe` runs for that action,
+	// and are run through `sh -c` exactly as written - so each must embed its
+	// own `sudo` if it needs one. This exists because a system daemon's
+	// passwordless sudo rule is often for one specific command line (e.g.
+	// `sudo launchctl kickstart -k system/com.kanata.daemon`) rather than for
+	// bootout+bootstrap, so the generic action would otherwise need an
+	// interactive password prompt every time.
+	StartCommand   string `yaml:"start_command,omitempty" mapstructure:"start_command"`
+	StopCommand    string `yaml:"stop_command,omitempty" mapstructure:"stop_command"`
+	RestartCommand string `yaml:"restart_command,omitempty" mapstructure:"restart_command"`
 }
 
 type ForwarderProxyConfig struct {

@@ -181,7 +181,18 @@ func launchdDisable(label, scope string) error {
 // action (start/stop/restart/enable/disable) against a scope=system launch
 // daemon. It is meant to be run interactively (e.g. via tea.ExecProcess) so
 // sudo can prompt for a password on the real terminal.
-func systemDaemonActionCmd(verb, label string) (*exec.Cmd, error) {
+//
+// overrides.{Start,Stop,Restart}Command, if set for verb, replace the
+// generic bootstrap/bootout pair and are run exactly as written, with no
+// extra "sudo" wrapper added - the daemon's passwordless sudo rule is
+// typically for one specific command line (e.g. `sudo launchctl kickstart -k
+// system/com.kanata.daemon`), and wrapping it in another `sudo sh -c` would
+// both double the sudo and no longer match that rule.
+func systemDaemonActionCmd(verb, label string, overrides DaemonConfig) (*exec.Cmd, error) {
+	if override := daemonActionOverride(verb, overrides); strings.TrimSpace(override) != "" {
+		//nolint:noctx // the caller runs this via tea.ExecProcess on the real terminal so sudo can prompt; a deadline here would cut off a human typing a password
+		return exec.Command("sh", "-c", override), nil // #nosec G204 -- override is operator-configured in daemons config, not untrusted input
+	}
 	plistPath, err := agentPlistPath(daemonScopeSystem, label)
 	if err != nil {
 		return nil, err
@@ -202,10 +213,72 @@ func systemDaemonActionCmd(verb, label string) (*exec.Cmd, error) {
 	default:
 		return nil, fmt.Errorf("unknown action %q", verb)
 	}
+	// No context/timeout here: this command is handed to tea.ExecProcess,
+	// which runs it synchronously on the real terminal so sudo can prompt for
+	// a password interactively. A context.WithTimeout whose cancel is
+	// deferred fires the moment this function returns - before the returned
+	// *exec.Cmd is ever started - which made every system-scoped action fail
+	// immediately with "context canceled" (e.g. AdGuard Home, a
+	// scope=system LaunchDaemon). commandTimeout would also be wrong here
+	// even applied correctly: a human typing a sudo password can easily take
+	// longer than 30s.
+	//nolint:noctx // see the comment above: this is handed to tea.ExecProcess and must outlive any command timeout
+	cmd := exec.Command("sudo", "sh", "-c", shellCmd) // #nosec G204 -- verb is one of a fixed set of internal actions; label/plistPath come from operator-controlled config, not untrusted input
+	return cmd, nil
+}
+
+// daemonActionOverride returns the configured command for verb (start/stop/
+// restart), or "" if none is configured - shared by the system-scope path
+// above and the user-scope one in observe.go.
+func daemonActionOverride(verb string, overrides DaemonConfig) string {
+	switch verb {
+	case actionStart:
+		return overrides.StartCommand
+	case actionStop:
+		return overrides.StopCommand
+	case actionRestart:
+		return overrides.RestartCommand
+	default:
+		return ""
+	}
+}
+
+// runDaemonOverrideCommand runs an operator-configured start/stop/restart
+// command for a user-scope daemon (see DaemonConfig), unprivileged. Unlike
+// the system-scope path this is not interactive, matching launchdStart/Stop/
+// Restart's contract: user-scope actions run silently, needing no sudo.
+func runDaemonOverrideCommand(cmd string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sudo", "sh", "-c", shellCmd) // #nosec G204 -- verb is one of a fixed set of internal actions; label/plistPath come from operator-controlled config, not untrusted input
-	return cmd, nil
+	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).CombinedOutput() // #nosec G204 -- cmd is operator-configured in daemons config, not untrusted input
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", cmd, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// genericDetail runs a daemon's configured StatusCommand, if any, and
+// returns its output split into lines - the fallback detail source for a
+// daemon that has no built-in daemonKind (e.g. a new entry under daemons:
+// with no Go-side support at all, like "kanata"'s `kanata --list`).
+func genericDetail(cfg DaemonConfig) []string {
+	if strings.TrimSpace(cfg.StatusCommand) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sh", "-c", cfg.StatusCommand).CombinedOutput() // #nosec G204 -- cfg.StatusCommand is operator-configured in daemons config, not untrusted input
+	if err != nil {
+		return []string{fmt.Sprintf("status_command failed: %v", err)}
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			result = append(result, line)
+		}
+	}
+	return result
 }
 
 func expandTilde(path string) string {
@@ -513,6 +586,11 @@ func vpnInterfaceStatus(iface string) (up bool, detail string) {
 	return false, fmt.Sprintf("interface %s present but has no address", iface)
 }
 
+// knownDaemonKeys are the map keys that additionally get a richer, built-in
+// status line in `observe` (see daemonKind/gatherExtra) and a fixed display
+// order. Any other key in daemons: is still observed and controllable - see
+// DaemonConfig - just with plain launchd state and, if configured,
+// StatusCommand's output instead of a bespoke detail function.
 var (
 	knownDaemonKeys = map[string]bool{
 		appAdGuard:            true,
@@ -524,26 +602,30 @@ var (
 		appVPN:                true,
 		"tunneling":           true,
 	}
-	knownDaemonFields = map[string]bool{"label": true, "scope": true, "interface": true}
+	knownDaemonFields = map[string]bool{
+		"label": true, "scope": true, "interface": true,
+		"status_command": true, "start_command": true, "stop_command": true, "restart_command": true,
+	}
 )
 
-// knownDaemonKeyList is the sorted key set, for error messages. Derived from
-// knownDaemonKeys rather than written out again: the hand-maintained copy in
-// the "not a recognized daemon" warning had already drifted, telling people
-// vpn was invalid when it was not.
-func knownDaemonKeyList() string {
-	keys := make([]string, 0, len(knownDaemonKeys))
-	for k := range knownDaemonKeys {
-		keys = append(keys, k)
+// knownDaemonFieldList is the sorted field set, for the warning message.
+func knownDaemonFieldList() string {
+	fields := make([]string, 0, len(knownDaemonFields))
+	for f := range knownDaemonFields {
+		fields = append(fields, f)
 	}
-	sort.Strings(keys)
-	return strings.Join(keys, ", ")
+	sort.Strings(fields)
+	return strings.Join(fields, ", ")
 }
 
 // daemonsConfigWarnings re-reads path's raw YAML looking for typos under the
-// top-level daemons: block (e.g. an unrecognized daemon name, or a field
-// other than label/scope) that viper's non-strict decode would otherwise
-// silently ignore, leaving the corresponding DaemonConfig zero-valued.
+// top-level daemons: block (a field other than the recognized ones, e.g.
+// label/scope/status_command) that viper's non-strict decode would otherwise
+// silently ignore, leaving that field zero-valued. Daemons is a map, so any
+// daemon *name* is valid by construction - a name macswitcher has no built-in
+// detail function for (like "kanata") still gets generic launchd status plus,
+// if configured, status_command's output; see knownDaemonKeys for the names
+// that additionally get a richer, built-in status line.
 func daemonsConfigWarnings(path string) ([]string, error) {
 	raw, err := os.ReadFile(path) // #nosec G304 -- path is the operator-provided config path, not untrusted input
 	if err != nil {
@@ -559,27 +641,20 @@ func daemonsConfigWarnings(path string) ([]string, error) {
 	}
 	daemonsMap, ok := daemonsRaw.(map[string]any)
 	if !ok {
-		return []string{"daemons must be a mapping of daemon name to {label, scope}"}, nil
+		return []string{"daemons must be a mapping of daemon name to {label, scope, ...}"}, nil
 	}
 	var warnings []string
 	for key, val := range daemonsMap {
-		if !knownDaemonKeys[key] {
-			warnings = append(warnings, fmt.Sprintf(
-				"daemons.%s is not a recognized daemon (expected one of %s); it will be ignored",
-				key, knownDaemonKeyList(),
-			))
-			continue
-		}
 		entry, ok := val.(map[string]any)
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("daemons.%s must be a mapping of {label, scope}", key))
+			warnings = append(warnings, fmt.Sprintf("daemons.%s must be a mapping of {label, scope, ...}", key))
 			continue
 		}
 		for field := range entry {
 			if !knownDaemonFields[field] {
 				warnings = append(warnings, fmt.Sprintf(
-					"daemons.%s.%s is not a recognized field (expected label or scope); it will be ignored",
-					key, field,
+					"daemons.%s.%s is not a recognized field (expected one of %s); it will be ignored",
+					key, field, knownDaemonFieldList(),
 				))
 			}
 		}
