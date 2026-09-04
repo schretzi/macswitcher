@@ -131,3 +131,43 @@ func TestSwitchJournalKeepsTheVerdictColumnAligned(t *testing.T) {
 		}
 	}
 }
+
+// Blocks in the switch log are delimited by a line starting with "===", so a
+// continuation line at column zero reads as the start of a new record. Errors
+// here are routinely multi-line - preflight's diagnosis is four - so this is
+// the normal case, not an edge one.
+func TestSwitchJournalIndentsEveryLineOfAMultiLineError(t *testing.T) {
+	journal := newSwitchJournal("home-alone", "home-vpn")
+	boom := errors.New("cannot resolve www-proxy.example\n  - www-proxy.example did not resolve\nhint: check the link itself")
+	_ = journal.step("preflight: resolve the names this context needs", func() error { return boom })
+	journal.close(boom)
+
+	rendered := journal.Render()
+	for line := range strings.SplitSeq(strings.TrimSpace(rendered), "\n") {
+		if line == "" || strings.HasPrefix(line, "===") {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") {
+			t.Fatalf("line %q starts at column zero, so it reads as a new block:\n%s", line, rendered)
+		}
+	}
+
+	// And the diagnosis appears once. The failing step already spells it out;
+	// repeating it under "error:" doubles a four-line message and buries the
+	// step list it belongs to.
+	if n := strings.Count(rendered, "hint: check the link itself"); n != 1 {
+		t.Fatalf("diagnosis appears %d times, want 1:\n%s", n, rendered)
+	}
+}
+
+// When the switch fails somewhere other than in a step - loading the config,
+// say - there is no step carrying the message, so it must still be reported.
+func TestSwitchJournalReportsAnErrorNoStepCarries(t *testing.T) {
+	journal := newSwitchJournal("home-alone", "home-vpn")
+	_ = journal.step("persist the current context", func() error { return nil })
+	journal.close(errors.New("config write failed"))
+
+	if !strings.Contains(journal.Render(), "config write failed") {
+		t.Fatalf("Render() lost the journal error:\n%s", journal.Render())
+	}
+}

@@ -160,14 +160,18 @@ func (j *switchJournal) Render() string {
 		case s.Skipped:
 			fmt.Fprintf(&b, "  %-54s skipped\n", label)
 		case s.Err != nil:
-			fmt.Fprintf(&b, "  %-54s FAILED after %s\n%s%v\n",
-				label, s.Duration.Round(time.Millisecond), indent, s.Err)
+			fmt.Fprintf(&b, "  %-54s FAILED after %s\n%s",
+				label, s.Duration.Round(time.Millisecond), indentLines(s.Err.Error(), indent))
 		default:
 			fmt.Fprintf(&b, "  %-54s ok (%s)\n", label, s.Duration.Round(time.Millisecond))
 		}
 	}
-	if j.Err != nil {
-		fmt.Fprintf(&b, "  error: %v\n", j.Err)
+	// Only report the journal's error separately when it is not already
+	// spelled out by the failing step. A preflight error runs to four lines
+	// of diagnosis; printing it twice in a block this size buries the step
+	// list it belongs to.
+	if j.Err != nil && j.Err.Error() != j.failedStepError() {
+		fmt.Fprintf(&b, "  error: %s", indentLines(j.Err.Error(), "  "))
 	}
 	if t := strings.TrimSpace(j.Transcript()); t != "" {
 		b.WriteString("  --- output ---\n")
@@ -177,6 +181,31 @@ func (j *switchJournal) Render() string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// indentLines prefixes every line, not just the first. Errors here are
+// routinely multi-line - preflight's diagnosis is four lines - and a
+// continuation starting at column zero reads as a new record, because the
+// blocks in this file are delimited by a line starting with "===".
+func indentLines(text, indent string) string {
+	var b strings.Builder
+	for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
+		b.WriteString(indent)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// failedStepError is the error text of the step that failed, or "" if none
+// did. Used only to avoid printing the same diagnosis twice.
+func (j *switchJournal) failedStepError() string {
+	for _, s := range j.Steps {
+		if s.Err != nil {
+			return s.Err.Error()
+		}
+	}
+	return ""
 }
 
 // switchLogPath is the running record of every switch, successful or not.
