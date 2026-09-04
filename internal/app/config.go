@@ -91,10 +91,28 @@ type SwitchContext struct {
 	// office context switched into that deadlock and came up with no working
 	// DNS at all. Filtering there is redundant anyway, since everything is
 	// forwarded to corporate systems that filter in their own right.
-	ProtectionEnabled *bool                 `yaml:"protection_enabled,omitempty" mapstructure:"protection_enabled"`
-	ForwarderProxy    *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
-	Alpaca            *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
-	Apps              LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
+	ProtectionEnabled *bool `yaml:"protection_enabled,omitempty" mapstructure:"protection_enabled"`
+	// PreflightHosts adds names that must resolve BEFORE a switch into this
+	// context begins - on top of the ones macswitcher can derive itself
+	// (dns.check_host, and the forward proxy's own hostname).
+	//
+	// The name to put here is usually the VPN gateway. macswitcher does not
+	// derive that one, and deliberately so: it lives in an employer-specific
+	// file that an employer-specific script reads, and teaching a general
+	// tool to go looking there would bake one organisation's layout into it.
+	// As data in a context, it costs one line.
+	//
+	// Why it matters: applyContext starts the VPN before it repoints the
+	// resolvers, because the tunnel has to resolve its own gateway through
+	// the network the machine is still on. If the currently configured
+	// resolvers are broken, that lookup fails, the switch is rolled back to
+	// the previous context - which is equally broken - and no further switch
+	// can succeed. Naming the gateway here turns that dead end into a
+	// diagnosis before anything is touched.
+	PreflightHosts []string              `yaml:"preflight_hosts,omitempty" mapstructure:"preflight_hosts"`
+	ForwarderProxy *ForwarderProxyConfig `yaml:"forwarder_proxy,omitempty" mapstructure:"forwarder_proxy"`
+	Alpaca         *AlpacaConfig         `yaml:"alpaca,omitempty" mapstructure:"alpaca"`
+	Apps           LifecycleConfig       `yaml:"apps" mapstructure:"apps"`
 }
 
 type DNSConfig struct {

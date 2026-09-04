@@ -25,6 +25,13 @@ func switchContext(cfgPath string, args []string) error {
 		return fmt.Errorf("context %q not found", selected)
 	}
 	previous := cfg.CurrentContext
+	// Before applyContext, not inside it: applyContext is also the rollback
+	// path, and a rollback that refused to run because DNS is broken would
+	// leave the machine stranded between two contexts - the exact opposite of
+	// what a rollback is for.
+	if err := preflight(cfg, ctx, selected); err != nil {
+		return err
+	}
 	if err := applyContext(cfgPath, cfg, ctx, selected); err != nil {
 		rollbackContext(cfgPath, cfg, previous, selected)
 		return err
