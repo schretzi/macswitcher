@@ -62,6 +62,9 @@ type observeModel struct {
 	quitting     bool
 	logs         logModal
 	switcher     switchModal
+	// pending is a destructive action on a connectivity-critical daemon that
+	// is waiting for a y/n answer. nil when nothing is being confirmed.
+	pending *pendingAction
 }
 
 // Observe starts the interactive TUI showing the status of macswitcher's own
@@ -430,6 +433,12 @@ const keyInterrupt = "ctrl+c"
 const keyEscape = "esc"
 
 func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A pending confirmation swallows the next key, whatever it is: the
+	// prompt asked a yes/no question, so treating an unrelated keystroke as
+	// anything but "no" would defeat the point of asking.
+	if m.pending != nil {
+		return m.resolveConfirm(msg)
+	}
 	switch msg.String() {
 	case "q", keyInterrupt, keyEscape:
 		m.quitting = true
@@ -449,19 +458,99 @@ func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		return m.openLogModal()
 	case "s":
-		return m, m.actionCmd(actionStart)
+		return m.requestAction(actionStart)
 	case "h":
-		return m, m.actionCmd(actionStop)
+		return m.requestAction(actionStop)
 	case "S":
 		return m.openSwitchModal()
 	case "R":
-		return m, m.actionCmd(actionRestart)
+		return m.requestAction(actionRestart)
 	case "e":
-		return m, m.actionCmd(actionEnable)
+		return m.requestAction(actionEnable)
 	case "d":
-		return m, m.actionCmd(actionDisable)
+		return m.requestAction(actionDisable)
 	}
 	return m, nil
+}
+
+// criticalDaemons carry this machine's DNS and outbound HTTP. Taking one
+// down does not degrade the setup, it disconnects the machine - including
+// the TUI's own ability to tell you what went wrong, and any remote session
+// you might have used to put it back. They are therefore the rows where a
+// destructive action asks first.
+//
+// Restart is not destructive in this sense: it ends with the daemon running.
+// Only stop and disable leave it down, and disable additionally survives a
+// reboot, which is how "the network broke and stayed broken" happens.
+var criticalDaemons = map[string]bool{
+	appAlpaca:  true,
+	appAdGuard: true,
+	appPrivoxy: true,
+}
+
+// pendingAction is an action held back until the operator confirms it.
+type pendingAction struct {
+	verb  string
+	index int
+}
+
+// requestAction runs verb, or - when it would disconnect the machine - parks
+// it behind a y/n prompt first.
+//
+// This exists because the whole keymap is single-key and unmodified: the
+// cursor starts on row 0, which is alpaca, so one stray keystroke on a
+// freshly opened TUI used to be enough to stop the proxy every outbound
+// connection goes through, with no confirmation and no undo once the network
+// it just removed was the one you needed.
+func (m observeModel) requestAction(verb string) (tea.Model, tea.Cmd) {
+	if !isDestructiveVerb(verb) || m.cursor >= len(m.rows) || !criticalDaemons[m.rows[m.cursor].name] {
+		return m, m.actionCmd(verb)
+	}
+	row := m.rows[m.cursor]
+	m.pending = &pendingAction{verb: verb, index: m.cursor}
+	m.message = fmt.Sprintf(
+		"%s %s? %s - press y to confirm, any other key to cancel",
+		displayVerb(verb), row.name, criticalDaemonWarning(row.name),
+	)
+	m.messageIsErr = true
+	return m, nil
+}
+
+func isDestructiveVerb(verb string) bool {
+	return verb == actionStop || verb == actionDisable
+}
+
+// criticalDaemonWarning says what specifically breaks, rather than a generic
+// "are you sure": the three daemons fail in visibly different ways, and
+// knowing which one you are about to lose is the point of the prompt.
+func criticalDaemonWarning(name string) string {
+	switch name {
+	case appAlpaca:
+		return "every proxied outbound connection on this machine goes through it"
+	case appAdGuard:
+		return "it is this machine's resolver, so DNS stops"
+	case appPrivoxy:
+		return "direct contexts forward through it, so they lose outbound HTTP"
+	}
+	return "it is required for network connectivity"
+}
+
+// resolveConfirm consumes the answer to a pending confirmation. Only a
+// literal "y" proceeds; the cursor is restored to the row that was asked
+// about, so a confirmation cannot be applied to a different daemon than the
+// one named in the prompt.
+func (m observeModel) resolveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	pending := *m.pending
+	m.pending = nil
+	if msg.String() != "y" {
+		m.message = fmt.Sprintf("%s %s cancelled", displayVerb(pending.verb), m.rows[pending.index].name)
+		m.messageIsErr = false
+		return m, nil
+	}
+	m.cursor = pending.index
+	m.message = ""
+	m.messageIsErr = false
+	return m, m.actionCmd(pending.verb)
 }
 
 // displayVerb is the wording the TUI uses for an action. The launchd verb

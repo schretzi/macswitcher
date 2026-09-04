@@ -459,6 +459,20 @@ enable`/`disable` (a persisted override independent of whether the agent is
 currently loaded, so a disabled agent stays off across reboots even with
 `RunAtLoad` set).
 
+### Halting a daemon the network depends on
+
+`alpaca`, `adguardhome` and `privoxy` carry this machine's DNS and outbound
+HTTP. Halting or disabling one of them does not degrade the setup, it
+disconnects the machine — including the TUI's own ability to report what
+happened. Because the keymap is single-key and unmodified, and the cursor
+starts on `alpaca`, one stray keystroke used to be enough to do it.
+
+So `h` and `d` on those three rows ask first: the status line names the
+daemon and what specifically breaks, and only a literal `y` proceeds. Any
+other key cancels — including `Esc`, which does *not* also quit while a
+confirmation is on screen. `s`, `R` and `e` never ask; they all end with the
+daemon running or runnable.
+
 ### Switching context from the TUI
 
 `S` opens a modal listing every configured context, with the cursor on — and
