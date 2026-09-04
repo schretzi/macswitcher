@@ -82,6 +82,9 @@ var adguardAPIPassword = func(cfg Config) (string, error) {
 
 	service := cfg.AdGuard.adguardAPIKeychainService()
 	user := cfg.AdGuard.adguardAPIUser()
+	// #nosec G204 -- the binary is a constant and there is no shell; service
+	// and user are argv elements from operator-controlled config, so neither
+	// can inject an argument or a command.
 	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
 		"-s", service, "-a", user, "-w", "/Library/Keychains/System.keychain")
 	out, err := cmd.Output()
