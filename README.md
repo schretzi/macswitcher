@@ -273,6 +273,7 @@ Validate all global and context files with `./macswitcher config validate`.
 ./macswitcher switch remote
 ./macswitcher switch work
 ./macswitcher preflight work
+./macswitcher snapshot --reason 'switch to office left DNS broken'
 ./macswitcher status
 ./macswitcher proxy set
 ./macswitcher proxy unset
@@ -337,9 +338,9 @@ network the machine is still on. The consequence is that the whole switch
 depends on the resolvers that are configured *right now* working.
 
 When they do not, the failure is a dead end rather than a slow path.
-`openconnect` fails with `getaddrinfo failed`, the switch is rolled back to the
-previous context — whose resolvers are equally broken — and every subsequent
-attempt fails identically. The machine cannot switch its way out.
+`openconnect` fails with `getaddrinfo failed`, the switch stops partway
+through, and every subsequent attempt fails identically. The machine cannot
+switch its way out.
 
 Preflight asks the question first. It resolves:
 
@@ -384,6 +385,86 @@ costs one line.
 DHCP fallback, without switching. That is the point of it: you reach for it
 when a switch has *already* failed and you want the diagnosis without
 triggering the failure again.
+
+### When a switch fails
+
+Earlier versions rolled back: on any failed step the previous context was
+re-applied. That was removed, because it does not help and costs the evidence.
+
+A switch fails *because* the machine is on a network the target context does
+not match. The previous context describes a network the machine is not on
+either — so in the office, rolling back to `home` restores an equally dead
+setup, having spent the failure on the way. Two broken states instead of one,
+and the second is harder to reason about because half of it was applied twice.
+
+What replaces it is a record of exactly how far the switch got.
+
+**Every switch is transcribed** to `~/Library/Logs/macswitcher-switch.log`, one
+self-contained block per switch, headed:
+
+```
+=== 2026-09-04T14:31:02+02:00  switch home-vpn -> office  FAILED (18.4s)
+```
+
+so `grep FAILED ~/Library/Logs/macswitcher-switch.log` answers "what happened,
+when" on its own. Below the header is the step journal — every step with `ok`,
+`skipped` or `FAILED` — followed by the full terminal output. `switch` is a
+short-lived command, so it never holds an fd across a `newsyslog` rename and
+needs no special handling for rotation.
+
+**A failed switch writes a snapshot automatically.** The moment a diagnostic is
+needed is the moment there is no network to look up how to ask for one.
+
+### Snapshot
+
+```sh
+macswitcher snapshot --reason 'office switch left DNS broken'
+```
+
+Collects the machine's whole network and daemon state into
+`~/Library/Logs/macswitcher-snapshots/<timestamp>/`:
+
+| path | contents |
+| --- | --- |
+| `report.md` | the summary — read this first; stands on its own |
+| `meta.txt` | version, current context, from → to, reason |
+| `switch-history.log` | the last few blocks of the switch transcript |
+| `dns-probes.txt` | each preflight/check name, resolved or not |
+| `daemons/<name>.status.txt` | full state, pid, runs, last exit, detail |
+| `daemons/<name>.log.txt` | last 300 lines of that daemon's log |
+| `network/scutil-dns.txt` | the resolvers *actually* in effect, per interface |
+| `network/per-service.txt` | DNS and proxy settings per network service |
+| `network/routes.txt`, `interfaces.txt`, `listening-ports.txt` | the rest |
+| `config/` | config, all contexts, generated `filter.pac` and zsh proxy rc |
+| `system/uptime.txt`, `sw_vers.txt` | did this machine just wake up? |
+
+Three properties it is built around:
+
+- **It never mutates anything.** A diagnostic that changes things is one nobody
+  dares run at the moment it is needed.
+- **It never blocks for long.** Every command gets 5 seconds, not the usual 30
+  — twenty commands against a broken network would otherwise take ten minutes,
+  and a snapshot nobody waits for is a snapshot nobody takes.
+- **It never fails as a whole.** A collector that fails records its error as
+  its own content. A partial snapshot is worth a great deal; an aborted one
+  nothing.
+
+A directory rather than one file, because a snapshot is a few KB of summary and
+several hundred KB of raw output — flattened into a single file the summary
+drowns under `netstat -rn`. It is still one unit to share:
+
+```sh
+tar czf ~/Desktop/snap.tgz -C ~/Library/Logs/macswitcher-snapshots <timestamp>
+```
+
+Credentials embedded in URLs (`scheme://user:pass@host`) are redacted, since a
+snapshot exists to be sent to somebody. The 20 most recent are kept; `newsyslog`
+rotates files, not directories, so the command that creates them prunes them.
+
+`network/scutil-dns.txt` is usually the most useful file in there. It shows the
+resolvers in effect including ones a VPN installed, which `networksetup` does
+not know about — and a half-finished switch most often leaves resolvers from
+one context next to a proxy from the other.
 
 ### AdGuard Home filtering per context
 
@@ -540,11 +621,13 @@ cancels.
 
 The switch runs as a child `macswitcher switch <context>` process and its
 output is streamed into the modal, so what you read there is byte for byte
-what the command prints on a terminal. While it runs, every key is ignored:
-a context switch rewrites DNS, the proxy and several daemons in sequence, and
-interrupting it halfway would leave the machine in a state no rollback
-covers. Once it finishes, `Enter` or `Esc` closes the modal and the list
-behind it is reloaded from the rewritten config.
+what the command prints on a terminal — and the same text is appended to
+`~/Library/Logs/macswitcher-switch.log`, so closing the modal does not lose
+it. While it runs, every key is ignored: a context switch rewrites DNS, the
+proxy and several daemons in sequence, and interrupting it halfway leaves the
+machine in a state nothing has recorded a reason for. Once it finishes,
+`Enter` or `Esc` closes the modal and the list behind it is reloaded from the
+rewritten config.
 
 
 ## Development

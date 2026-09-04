@@ -16,6 +16,7 @@ Manage macOS network contexts, DNS, and proxy services
 * [macswitcher preflight](macswitcher_preflight.md)	 - Check that a context's DNS prerequisites resolve, without switching
 * [macswitcher proxy](macswitcher_proxy.md)	 - Manage local proxy wiring and proxy diagnostics
 * [macswitcher service](macswitcher_service.md)	 - Manage the macswitcher LaunchAgent
+* [macswitcher snapshot](macswitcher_snapshot.md)	 - Write a diagnostic snapshot of the current network state
 * [macswitcher status](macswitcher_status.md)	 - Show the active context and service status
 * [macswitcher switch](macswitcher_switch.md)	 - Switch the active network context
 * [macswitcher version](macswitcher_version.md)	 - Print the macswitcher version, build info and licence
