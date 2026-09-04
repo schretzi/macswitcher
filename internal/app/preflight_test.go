@@ -167,9 +167,12 @@ func TestPreflightReportsWhenNeitherResolverSetWorks(t *testing.T) {
 // running the check again to learn the rest, at which point it has not done
 // its job.
 func TestPreflightReportsEveryFailingHost(t *testing.T) {
+	// ok.example resolves under both resolver sets, so it is never a failure
+	// and must not appear in the headline. bad-* fail under both.
 	fake := &fakeDNS{
-		configured: map[string][]string{"Wi-Fi": nil},
-		resolvable: map[string]bool{"ok.example": true},
+		configured:     map[string][]string{"Wi-Fi": nil},
+		resolvable:     map[string]bool{"ok.example": true},
+		dhcpResolvable: map[string]bool{"ok.example": true},
 	}
 	stubDNSServiceOps(t, fake)
 
@@ -182,6 +185,42 @@ func TestPreflightReportsEveryFailingHost(t *testing.T) {
 		if !strings.Contains(err.Error(), host) {
 			t.Fatalf("preflight() = %v, does not mention %s", err, host)
 		}
+	}
+	// And it must not accuse the name that resolved perfectly well. The
+	// headline used to list every probed host, so a working VPN gateway was
+	// reported as unresolvable alongside a genuinely broken proxy - which
+	// sends the operator to look at the tunnel instead of the proxy.
+	headline, _, _ := strings.Cut(err.Error(), "\n")
+	accused, _, _ := strings.Cut(headline, " (")
+	if strings.Contains(accused, "ok.example") {
+		t.Fatalf("headline %q accuses ok.example, which resolved", headline)
+	}
+	if !strings.Contains(err.Error(), "ok.example did resolve") {
+		t.Fatalf("preflight() = %v, want ok.example reported as resolving", err)
+	}
+}
+
+// The DHCP diagnosis has to name the hosts the CONFIGURED resolvers could not
+// handle. After a successful DHCP retry the last attempt has no failures at
+// all, so a message built from it would name nobody.
+func TestPreflightDHCPDiagnosisNamesOnlyTheConfiguredFailures(t *testing.T) {
+	fake := &fakeDNS{
+		configured:     map[string][]string{"Wi-Fi": {"127.0.0.1"}},
+		resolvable:     map[string]bool{"ok.example": true},
+		dhcpResolvable: map[string]bool{"ok.example": true, "broken.example": true},
+	}
+	stubDNSServiceOps(t, fake)
+
+	ctx := SwitchContext{PreflightHosts: []string{"ok.example", "broken.example"}}
+	err := preflight(cfgWithServices("Wi-Fi"), ctx, "office")
+	if err == nil {
+		t.Fatal("preflight() = nil, want the DHCP diagnosis")
+	}
+	if !strings.Contains(err.Error(), "broken.example did not resolve with the configured") {
+		t.Fatalf("preflight() = %v, want broken.example named", err)
+	}
+	if strings.Contains(err.Error(), "ok.example did not resolve") {
+		t.Fatalf("preflight() = %v, must not accuse ok.example", err)
 	}
 }
 

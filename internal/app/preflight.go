@@ -44,6 +44,18 @@ type preflightResult struct {
 	UsedDHCP bool
 	// Failures are the errors from the LAST attempt, empty when OK.
 	Failures []error
+	// Failed names the hosts behind those errors, in probe order. Kept
+	// separately from Hosts because "which of them failed" is the diagnosis:
+	// the forward proxy alone failing is a different problem from every name
+	// failing, and a message that names all probed hosts as unresolvable when
+	// only one was is worse than useless at the moment it is read.
+	Failed []string
+	// FailedConfigured is what failed on the FIRST attempt, with the
+	// resolvers as configured. It survives the DHCP retry because that is the
+	// case where Failed goes empty - the names resolved via DHCP - and the
+	// question worth answering then is which of them the configured resolvers
+	// could not handle.
+	FailedConfigured []string
 }
 
 // dnsServiceOps is the only path from preflight to the machine's DNS
@@ -168,14 +180,14 @@ func preflightHosts(ctx SwitchContext) []string {
 // proxy alone failing is a different problem from every name failing, and an
 // operator who is told about one of three has to run the check again to learn
 // the rest.
-func probePreflightHosts(hosts []string) []error {
-	var failures []error
+func probePreflightHosts(hosts []string) (failed []string, failures []error) {
 	for _, host := range hosts {
 		if err := dnsServiceOps.resolve(host); err != nil {
+			failed = append(failed, host)
 			failures = append(failures, err)
 		}
 	}
-	return failures
+	return failed, failures
 }
 
 // runPreflight probes the context's names, and on failure retries once with
@@ -194,7 +206,8 @@ func runPreflight(cfg Config, ctx SwitchContext) (preflightResult, error) {
 		return result, nil
 	}
 
-	result.Failures = probePreflightHosts(result.Hosts)
+	result.Failed, result.Failures = probePreflightHosts(result.Hosts)
+	result.FailedConfigured = result.Failed
 	if len(result.Failures) == 0 {
 		result.OK = true
 		return result, nil
@@ -213,7 +226,7 @@ func runPreflight(cfg Config, ctx SwitchContext) (preflightResult, error) {
 	defer restore()
 
 	dnsServiceOps.flush()
-	result.Failures = probePreflightHosts(result.Hosts)
+	result.Failed, result.Failures = probePreflightHosts(result.Hosts)
 	result.OK = len(result.Failures) == 0
 	return result, nil
 }
@@ -295,7 +308,10 @@ func useDHCPResolvers(services []string) (func(), error) {
 // the two cases have different fixes and nothing else distinguishes them.
 func preflightError(name string, result preflightResult) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "preflight for context %s failed: cannot resolve %s", name, strings.Join(result.Hosts, ", "))
+	fmt.Fprintf(&b, "preflight for context %s failed: cannot resolve %s", name, strings.Join(result.Failed, ", "))
+	if len(result.Failed) < len(result.Hosts) {
+		fmt.Fprintf(&b, " (%s did resolve)", strings.Join(resolvedHosts(result), ", "))
+	}
 	for _, err := range result.Failures {
 		fmt.Fprintf(&b, "\n  - %v", err)
 	}
@@ -319,8 +335,26 @@ func preflightDHCPWorkedError(name string, result preflightResult) error {
 			" back as they were. Fix the local resolver (AdGuard Home, `macswitcher observe`) or"+
 			" switch to a context whose resolvers this network can reach - `sudo networksetup"+
 			" -setdnsservers <service> Empty` is the manual escape hatch",
-		name, strings.Join(result.Hosts, ", "),
+		name, strings.Join(result.FailedConfigured, ", "),
 	)
+}
+
+// resolvedHosts is Hosts minus Failed. A partial failure is the common case -
+// the corporate proxy unreachable while the VPN gateway resolves fine - and
+// saying which names were fine narrows the problem as much as saying which
+// were not.
+func resolvedHosts(result preflightResult) []string {
+	failed := make(map[string]bool, len(result.Failed))
+	for _, h := range result.Failed {
+		failed[h] = true
+	}
+	ok := make([]string, 0, len(result.Hosts)-len(result.Failed))
+	for _, h := range result.Hosts {
+		if !failed[h] {
+			ok = append(ok, h)
+		}
+	}
+	return ok
 }
 
 // preflight runs the check and translates its outcome into the one thing
