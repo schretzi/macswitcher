@@ -91,3 +91,43 @@ func TestSwitchJournalCloseRestoresTheWriter(t *testing.T) {
 		t.Fatal("close did not restore the previous writer")
 	}
 }
+
+// The verdict column has to stay put across the single-to-double-digit step
+// boundary. This block exists to be skimmed for the word FAILED; a column that
+// jumps two characters left at step 10 is exactly the kind of thing that makes
+// a log tiring to read, and a real switch has eleven steps, so it is not a
+// hypothetical.
+func TestSwitchJournalKeepsTheVerdictColumnAligned(t *testing.T) {
+	journal := newSwitchJournal("home", "office")
+	for i := range 11 {
+		name := "step"
+		if i == 9 {
+			name = "the tenth step"
+		}
+		if err := journal.step(name, func() error { return nil }); err != nil {
+			t.Fatalf("step %d: %v", i+1, err)
+		}
+	}
+	journal.close(nil)
+
+	var cols []int
+	for line := range strings.SplitSeq(journal.Render(), "\n") {
+		// The "=== ... ok (2.6s)" header carries a verdict too, and it is not
+		// part of the column being checked.
+		if !strings.HasPrefix(line, "  ") {
+			continue
+		}
+		if i := strings.Index(line, " ok ("); i >= 0 {
+			cols = append(cols, i)
+		}
+	}
+	if len(cols) != 11 {
+		t.Fatalf("found %d step lines, want 11:\n%s", len(cols), journal.Render())
+	}
+	for i, c := range cols {
+		if c != cols[0] {
+			t.Fatalf("step %d puts its verdict at column %d, step 1 at %d:\n%s",
+				i+1, c, cols[0], journal.Render())
+		}
+	}
+}

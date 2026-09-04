@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -147,15 +148,22 @@ func (j *switchJournal) Render() string {
 	fmt.Fprintf(&b, "=== %s  switch %s -> %s  %s (%s)\n",
 		j.Started.Format(time.RFC3339), from, j.To, verdict, j.Finished.Sub(j.Started).Round(time.Millisecond))
 
+	// The step number is right-aligned to the width of the largest one, so
+	// the verdict column does not jump two characters left at step 10. The
+	// whole point of this block is to be skimmed for the word FAILED, and a
+	// column that moves halfway down defeats that.
+	numWidth := len(strconv.Itoa(len(j.Steps)))
 	for i, s := range j.Steps {
+		label := fmt.Sprintf("%*d. %s", numWidth, i+1, s.Name)
+		indent := strings.Repeat(" ", numWidth+4)
 		switch {
 		case s.Skipped:
-			fmt.Fprintf(&b, "  %d. %-52s skipped\n", i+1, s.Name)
+			fmt.Fprintf(&b, "  %-54s skipped\n", label)
 		case s.Err != nil:
-			fmt.Fprintf(&b, "  %d. %-52s FAILED after %s\n       %v\n",
-				i+1, s.Name, s.Duration.Round(time.Millisecond), s.Err)
+			fmt.Fprintf(&b, "  %-54s FAILED after %s\n%s%v\n",
+				label, s.Duration.Round(time.Millisecond), indent, s.Err)
 		default:
-			fmt.Fprintf(&b, "  %d. %-52s ok (%s)\n", i+1, s.Name, s.Duration.Round(time.Millisecond))
+			fmt.Fprintf(&b, "  %-54s ok (%s)\n", label, s.Duration.Round(time.Millisecond))
 		}
 	}
 	if j.Err != nil {
