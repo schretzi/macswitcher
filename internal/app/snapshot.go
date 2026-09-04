@@ -227,8 +227,14 @@ func collectSnapshot(cfgPath string, cfg Config, req snapshotRequest) *snapshot 
 		// without it a manual snapshot could not answer "from which context
 		// to which" at all.
 		s.from = cfg.CurrentContext
-		s.add("switch-history.log", lastSwitchLogEntries(5))
 	}
+
+	// The history goes in either way. In the automatic case it does not yet
+	// contain the failing switch - that block is appended after the snapshot
+	// is written, and is in switch.log instead - so the two complement rather
+	// than duplicate each other. It answers the question that decides how to
+	// read everything else: is this the first time, or the fourth?
+	s.add("switch-history.log", lastSwitchLogEntries(5))
 
 	s.collectMeta(cfg)
 	s.collectDaemons(cfg, cfgPath)

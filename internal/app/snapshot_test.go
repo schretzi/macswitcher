@@ -217,3 +217,50 @@ func TestAppendSwitchLogWritesOneEntryPerSwitch(t *testing.T) {
 		t.Fatalf("switch log holds %d entries, want 2:\n%s", got, b)
 	}
 }
+
+// The automatic snapshot must carry the history as well as the live journal.
+// "Has this failed before, and how often" decides how the rest of the snapshot
+// is read, and the history is the only thing that answers it. The failing
+// switch itself is NOT in there - its block is appended after the snapshot is
+// written - so the two files complement each other.
+func TestSnapshotWithAJournalStillCarriesTheHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// collectProbes resolves through dnsServiceOps, which is armed to panic
+	// so no test can quietly depend on the developer's own network.
+	stubDNSServiceOps(t, &fakeDNS{configured: map[string][]string{}})
+
+	logPath := filepath.Join(home, "Library", "Logs", "macswitcher-switch.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	prior := "=== 2026-09-01T10:00:00+02:00  switch home -> office  FAILED (1s)\n  1. preflight  FAILED after 1s\n\n"
+	if err := os.WriteFile(logPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	journal := newSwitchJournal("home", "office")
+	_ = journal.step("preflight", func() error { return errors.New("boom") })
+	journal.close(errors.New("boom"))
+
+	dir, err := writeSnapshot("", Config{CurrentContext: "home"}, snapshotRequest{
+		Journal: journal,
+		Reason:  "test",
+	})
+	if err != nil {
+		t.Fatalf("writeSnapshot() = %v", err)
+	}
+
+	for _, name := range []string{"switch.log", "switch-history.log"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s missing from an automatic snapshot: %v", name, err)
+		}
+	}
+	history, err := os.ReadFile(filepath.Join(dir, "switch-history.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(history), "2026-09-01T10:00:00") {
+		t.Fatalf("history lost the earlier switch:\n%s", history)
+	}
+}
