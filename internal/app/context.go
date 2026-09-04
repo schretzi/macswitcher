@@ -25,24 +25,74 @@ func switchContext(cfgPath string, args []string) error {
 		return fmt.Errorf("context %q not found", selected)
 	}
 	previous := cfg.CurrentContext
-	// Before applyContext, not inside it: applyContext is also the rollback
-	// path, and a rollback that refused to run because DNS is broken would
-	// leave the machine stranded between two contexts - the exact opposite of
-	// what a rollback is for.
-	if err := preflight(cfg, ctx, selected); err != nil {
+
+	journal := newSwitchJournal(previous, selected)
+	err = func() error {
+		// Preflight is a step of the switch, so it belongs in the journal:
+		// "the switch never started because nothing resolved" is a different
+		// story from "the switch got half-way", and the report has to be able
+		// to tell them apart.
+		if err := journal.step("preflight: resolve the names this context needs", func() error {
+			return preflight(cfg, ctx, selected)
+		}); err != nil {
+			return err
+		}
+		return applyContext(cfgPath, cfg, ctx, selected, journal)
+	}()
+	journal.close(err)
+
+	logPath := appendSwitchLog(journal)
+	if err != nil {
+		reportFailedSwitch(cfgPath, cfg, journal, logPath)
 		return err
 	}
-	if err := applyContext(cfgPath, cfg, ctx, selected); err != nil {
-		rollbackContext(cfgPath, cfg, previous, selected)
-		return err
-	}
-	fmt.Printf("switched context to %s\n", selected)
+	logf("switched context to %s\n", selected)
 	return nil
 }
 
-// applyContext puts the machine into one context. Split out of switchContext
-// so a failed switch can be undone by applying the previous context with the
-// same code path - see rollbackContext.
+// reportFailedSwitch is what a failed switch does INSTEAD of rolling back.
+//
+// The rollback it replaces was a plausible idea that does not survive contact
+// with the case it was written for. A switch fails because the machine is on a
+// network the target context does not match - and the context it would roll
+// back to describes a network the machine is not on either. Coming back to
+// "home" while sitting in the office restores a setup that is just as dead,
+// having spent the evidence of the failure on the way. Two broken states are
+// not better than one, and the second one is harder to reason about because
+// half of it was applied twice.
+//
+// So: leave the machine where it is, say exactly which steps ran and which did
+// not, and write a snapshot while the broken state still exists to be
+// described. The snapshot is taken automatically rather than left to a flag,
+// because the moment it is needed is the moment the operator has no network to
+// look up how to ask for it.
+func reportFailedSwitch(cfgPath string, cfg Config, journal *switchJournal, logPath string) {
+	logf("\nthe switch to %q failed at step: %s\n", journal.To, journal.FailedStep())
+	logf("the machine has NOT been rolled back - the previous context describes a network\n")
+	logf("this machine is not on either, so restoring it would only hide the evidence.\n")
+
+	if logPath != "" {
+		logf("switch log: %s\n", logPath)
+	}
+	dir, err := writeSnapshot(cfgPath, cfg, snapshotRequest{
+		Reason:  fmt.Sprintf("switch %s -> %s failed", journal.From, journal.To),
+		Journal: journal,
+	})
+	if err != nil {
+		logf("warning: could not write the diagnostic snapshot: %v\n", err)
+		return
+	}
+	logf("snapshot:   %s\n", dir)
+	logf("\nWhen you have a working network again, start with %s/report.md.\n", dir)
+}
+
+// applyContext puts the machine into one context.
+//
+// Every step is recorded in the journal as it runs. That is not instrumentation
+// bolted on afterwards: since a failed switch is no longer undone, the record of
+// which steps took effect IS the recovery information. "The VPN came up, the
+// resolvers were repointed, the proxy was never touched" tells the operator
+// where the machine actually stands; an error string alone does not.
 //
 // Order matters, and not in the obvious way. Every step below depends on DNS
 // still working, so nothing may break DNS before the thing that repairs it has
@@ -63,82 +113,101 @@ func switchContext(cfgPath string, args []string) error {
 //   - The proxy is changed last, so anything that fails above leaves the
 //     machine on the proxy settings it already had rather than half-way onto
 //     new ones.
-func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string) error {
+func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string, journal *switchJournal) error {
 	cfg.CurrentContext = name
-	if err := saveRuntimeState(cfgPath, ConfigState{CurrentContext: name}); err != nil {
+	if err := journal.step("persist "+name+" as the current context", func() error {
+		return saveRuntimeState(cfgPath, ConfigState{CurrentContext: name})
+	}); err != nil {
 		return err
 	}
 
-	if strings.TrimSpace(ctx.MacOSNetworkLocation) != "" {
-		if err := runCommand("scselect", ctx.MacOSNetworkLocation); err != nil {
-			fmt.Printf("warning: could not switch macOS network location: %v\n", err)
-		}
+	if location := strings.TrimSpace(ctx.MacOSNetworkLocation); location != "" {
+		_ = journal.step("select the macOS network location "+location, func() error {
+			if err := runCommand("scselect", location); err != nil {
+				logf("warning: could not switch macOS network location: %v\n", err)
+			}
+			// Deliberately not returned: a failed scselect warns and the
+			// switch goes on, as it always has. The journal still carries
+			// the warning through the transcript.
+			return nil
+		})
+	} else {
+		journal.skip("select the macOS network location")
 	}
-	if err := syncContextApplications(cfg, ctx); err != nil {
+
+	if err := journal.step("run the context's app and VPN hooks", func() error {
+		return syncContextApplications(cfg, ctx)
+	}); err != nil {
 		return err
 	}
+
 	if len(ctx.Upstreams) > 0 {
-		if err := syncAdGuardUpstreams(cfg, ctx.Upstreams, name); err != nil {
+		if err := journal.step("rewrite AdGuard Home's upstreams and restart it", func() error {
+			return syncAdGuardUpstreams(cfg, ctx.Upstreams, name)
+		}); err != nil {
 			return err
 		}
+	} else {
+		journal.skip("rewrite AdGuard Home's upstreams")
 	}
+
 	// After the upstream sync, because that restarts AdGuard Home and a
 	// restart would drop a protection change made before it. Before the DNS
 	// check, because on a corporate network filtering is precisely what stops
 	// DNS from working - applying it afterwards would fail the switch at the
 	// check and never get here.
-	syncAdGuardProtection(cfg, ctx)
-	if err := applyLocalResolverDNS(cfg); err != nil {
+	_ = journal.step("apply AdGuard Home's protection setting", func() error {
+		syncAdGuardProtection(cfg, ctx)
+		return nil
+	})
+
+	if err := journal.step("point the network services at the local resolver", func() error {
+		return applyLocalResolverDNS(cfg)
+	}); err != nil {
 		return err
 	}
-	flushDNSCache()
-	if err := checkDNSResolution(ctx); err != nil {
+
+	_ = journal.step("flush the system DNS cache", func() error {
+		flushDNSCache()
+		return nil
+	})
+
+	if err := journal.step("verify DNS resolves", func() error {
+		return checkDNSResolution(ctx)
+	}); err != nil {
 		return fmt.Errorf("%w\nhint: DNS is not resolving after the switch; fix DNS (check AdGuard Home, VPN, network location) and rerun `macswitcher switch %s`%s", err, name, protectionHint(ctx))
 	}
-	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) { //nolint:nestif // TODO: split this up. Left as-is for now because it drives live network/VPN/proxy switching and a refactor needs its own test pass.
-		if err := unsetLocalProxy(cfgPath); err != nil {
-			return err
-		}
-		if err := serviceStop(); err != nil {
-			fmt.Printf("warning: could not stop proxy service: %v\n", err)
-		}
-	} else {
-		if err := serviceRestart(); err != nil {
-			fmt.Printf("warning: could not restart proxy service automatically: %v\n", err)
-		}
-		if err := setLocalProxy(cfgPath); err != nil {
-			return err
-		}
-	}
-	return nil
+
+	return applyContextProxy(cfgPath, ctx, journal)
 }
 
-// rollbackContext puts back the context that was active before a failed
-// switch. Best effort, and loud about it either way.
-//
-// A switch mutates the machine in steps, so a failure part-way through leaves
-// it in a state that matches neither context: resolvers pointed at a network
-// that is not reachable, a VPN up with no proxy to use it, a filtering proxy
-// stopped by the new context and not started by anything. That state is worse
-// than either end of the switch, and it is not obvious from the error which
-// half of it happened - so undo it rather than leave the operator to guess.
-func rollbackContext(cfgPath string, cfg Config, previous, failed string) {
-	if strings.TrimSpace(previous) == "" || previous == failed {
-		fmt.Printf("warning: the switch to %q failed part-way through and there is no different context to fall back to; the machine may be in a mixed state\n", failed)
-		return
+// applyContextProxy is the last phase of a switch: the proxy, changed only
+// once everything it depends on is in place, so a failure above leaves the
+// machine on the proxy settings it already had rather than half-way onto new
+// ones.
+func applyContextProxy(cfgPath string, ctx SwitchContext, journal *switchJournal) error {
+	if strings.EqualFold(ctx.ProxyMode, ProxyModeOff) {
+		if err := journal.step("unset the local proxy", func() error {
+			return unsetLocalProxy(cfgPath)
+		}); err != nil {
+			return err
+		}
+		return journal.step("stop the proxy service", func() error {
+			if err := serviceStop(); err != nil {
+				logf("warning: could not stop proxy service: %v\n", err)
+			}
+			return nil
+		})
 	}
-	prev, ok := cfg.Contexts[previous]
-	if !ok {
-		fmt.Printf("warning: the switch to %q failed part-way through and the previous context %q no longer exists; the machine may be in a mixed state\n", failed, previous)
-		return
-	}
-	fmt.Printf("the switch to %q failed part-way through; rolling back to %q\n", failed, previous)
-	if err := applyContext(cfgPath, cfg, prev, previous); err != nil {
-		fmt.Printf("warning: rolling back to %q failed as well: %v\n", previous, err)
-		fmt.Printf("warning: the machine is in a mixed state; fix the cause and rerun `macswitcher switch %s`\n", previous)
-		return
-	}
-	fmt.Printf("rolled back to %s\n", previous)
+	_ = journal.step("restart the proxy service", func() error {
+		if err := serviceRestart(); err != nil {
+			logf("warning: could not restart proxy service automatically: %v\n", err)
+		}
+		return nil
+	})
+	return journal.step("set the local proxy", func() error {
+		return setLocalProxy(cfgPath)
+	})
 }
 
 // syncAdGuardUpstreams points AdGuard Home at the upstream resolvers this
@@ -168,17 +237,17 @@ func status(cfgPath string) error {
 	}
 	proxyURL, noProxy := proxyEnvValues(cfg)
 	ctx := cfg.Contexts[cfg.CurrentContext]
-	fmt.Printf("config: %s\n", cfgPath)
-	fmt.Printf("current_context: %s\n", cfg.CurrentContext)
-	fmt.Printf("macos_network_location: %s\n", ctx.MacOSNetworkLocation)
-	fmt.Printf("proxy_mode: %s\n", ctx.ProxyMode)
-	fmt.Printf("local_proxy: %s\n", proxyURL)
-	fmt.Printf("filter_proxy: %s\n", filterProxyStatusLine(cfg, ctx))
-	fmt.Printf("local_resolver: %s\n", cfg.DNS.LocalResolver)
-	fmt.Printf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
-	fmt.Printf("adguard_filtering: %s\n", adguardProtectionStatusLine(cfg, ctx))
-	fmt.Printf("no_proxy: %s\n", noProxy)
-	fmt.Printf("network_services configured: %d (0 means auto-detect)\n", len(cfg.NetworkServices))
+	logf("config: %s\n", cfgPath)
+	logf("current_context: %s\n", cfg.CurrentContext)
+	logf("macos_network_location: %s\n", ctx.MacOSNetworkLocation)
+	logf("proxy_mode: %s\n", ctx.ProxyMode)
+	logf("local_proxy: %s\n", proxyURL)
+	logf("filter_proxy: %s\n", filterProxyStatusLine(cfg, ctx))
+	logf("local_resolver: %s\n", cfg.DNS.LocalResolver)
+	logf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
+	logf("adguard_filtering: %s\n", adguardProtectionStatusLine(cfg, ctx))
+	logf("no_proxy: %s\n", noProxy)
+	logf("network_services configured: %d (0 means auto-detect)\n", len(cfg.NetworkServices))
 	fmt.Println("service:")
 	return serviceStatus()
 }
@@ -267,7 +336,7 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 		}
 	}
 
-	fmt.Printf("config: %s\n", cfgPath)
+	logf("config: %s\n", cfgPath)
 	if len(critical) == 0 && len(warnings) == 0 {
 		fmt.Println("validation: OK")
 		return nil
@@ -275,13 +344,13 @@ func configValidate(cfgPath string) error { //nolint:gocyclo // TODO: split this
 	if len(critical) > 0 {
 		fmt.Println("critical:")
 		for _, c := range critical {
-			fmt.Printf("- %s\n", c)
+			logf("- %s\n", c)
 		}
 	}
 	if len(warnings) > 0 {
 		fmt.Println("warnings:")
 		for _, w := range warnings {
-			fmt.Printf("- %s\n", w)
+			logf("- %s\n", w)
 		}
 	}
 	if len(critical) > 0 {

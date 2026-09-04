@@ -44,17 +44,17 @@ func detectAuth(cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("proxy: %s\n", proxyAddr)
-	fmt.Printf("target: %s\n", *target)
-	fmt.Printf("http_status: %d\n", statusCode)
+	logf("proxy: %s\n", proxyAddr)
+	logf("target: %s\n", *target)
+	logf("http_status: %d\n", statusCode)
 	if len(methods) == 0 {
 		fmt.Println("proxy_auth_methods: none detected")
 		fmt.Println("recommendation: no auth challenge observed; verify proxy path or force a protected URL")
-		fmt.Printf("raw_headers:\n%s\n", raw)
+		logf("raw_headers:\n%s\n", raw)
 		return nil
 	}
-	fmt.Printf("proxy_auth_methods: %s\n", strings.Join(methods, ", "))
-	fmt.Printf("recommendation: %s\n", recommendRuntime(methods))
+	logf("proxy_auth_methods: %s\n", strings.Join(methods, ", "))
+	logf("recommendation: %s\n", recommendRuntime(methods))
 	return nil
 }
 
@@ -426,7 +426,7 @@ func keychainPasswordSet(cfgPath string) error {
 	if strings.TrimSpace(account) == "" {
 		account = proxy.Username
 	}
-	fmt.Printf("setting keychain password for service=%q account=%q\n", service, account)
+	logf("setting keychain password for service=%q account=%q\n", service, account)
 	fmt.Println("a macOS keychain prompt may appear")
 	// Not `ctx`: that name is already the macswitcher context in this scope.
 	cmdCtx, cancel := context.WithTimeout(context.Background(), keychainTimeout)

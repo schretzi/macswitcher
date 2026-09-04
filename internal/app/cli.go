@@ -58,6 +58,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		contextCommand(),
 		preflightCommand(),
+		snapshotCmd(),
 		statusCommand(),
 		proxyCommand(),
 		configCommand(),
@@ -125,6 +126,34 @@ func preflightCommand() *cobra.Command {
 			return preflightContext(path, args[0])
 		},
 	}
+}
+
+// snapshotCmd writes a diagnostic bundle. A failed switch does this on its
+// own; the command is for the cases nothing triggers automatically - the
+// machine is misbehaving without a switch having failed, or you want a
+// working "before" to compare a later failure against.
+func snapshotCmd() *cobra.Command {
+	var reason string
+	command := &cobra.Command{
+		Use:   "snapshot",
+		Short: "Write a diagnostic snapshot of the current network state",
+		Long: "Collect the context transition, every daemon's state and log tail, the\n" +
+			"resolvers and routes actually in effect, DNS probe results and the\n" +
+			"relevant configuration into ~/Library/Logs/macswitcher-snapshots/<time>/.\n\n" +
+			"Read-only: it changes nothing, and every command it runs is time-bounded,\n" +
+			"so it stays usable on a machine whose network is already broken.",
+		Args:    cobra.NoArgs,
+		GroupID: groupContext,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := configuredPath()
+			if err != nil {
+				return err
+			}
+			return snapshotCommand(path, reason)
+		},
+	}
+	command.Flags().StringVar(&reason, "reason", "", "one line on why this snapshot was taken, recorded in the report")
+	return command
 }
 
 func statusCommand() *cobra.Command {

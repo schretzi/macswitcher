@@ -19,11 +19,11 @@ import (
 // machine is still on. But it makes the whole switch conditional on the
 // CURRENT resolvers working. When they do not - a stale corporate resolver
 // still configured after leaving the office, a local resolver that is down -
-// openconnect fails with "getaddrinfo failed", applyContext returns, and
-// rollbackContext dutifully restores the previous context: the one whose
-// resolvers are equally broken. Every subsequent attempt fails identically.
-// The machine cannot switch its way out, and the only escape is knowing to
-// reach for networksetup by hand.
+// openconnect fails with "getaddrinfo failed" and the switch stops part-way
+// through. Nothing puts it back - deliberately, since the context it would go
+// back to describes a network the machine is not on either - so the operator
+// is left on a half-applied configuration with no working DNS. The only escape
+// is knowing to reach for networksetup by hand.
 //
 // The fix is not more retries. It is noticing, before anything is changed,
 // that name resolution is broken, and handing the resolvers back to DHCP
@@ -240,7 +240,7 @@ func useDHCPResolvers(services []string) (func(), error) {
 				// Loud, and not fatal: the remaining services still
 				// have to be put back. A half-restored machine is
 				// worse than a fully restored one with a warning.
-				fmt.Printf("warning: could not restore DNS servers for %s: %v\n", svc, err)
+				logf("warning: could not restore DNS servers for %s: %v\n", svc, err)
 			}
 		}
 	}
@@ -365,7 +365,7 @@ func preflightContext(cfgPath, name string) error {
 		return err
 	}
 	if len(result.Hosts) == 0 {
-		fmt.Printf("preflight for context %s: nothing to check\n"+
+		logf("preflight for context %s: nothing to check\n"+
 			"hint: set dns.check_host or preflight_hosts on this context - the VPN gateway is\n"+
 			"      usually the name worth naming, since a switch cannot start the tunnel\n"+
 			"      without resolving it.\n", name)
@@ -373,7 +373,7 @@ func preflightContext(cfgPath, name string) error {
 	}
 	switch {
 	case result.OK && !result.UsedDHCP:
-		fmt.Printf("preflight for context %s: ok (%s resolve)\n", name, strings.Join(result.Hosts, ", "))
+		logf("preflight for context %s: ok (%s resolve)\n", name, strings.Join(result.Hosts, ", "))
 		return nil
 	case result.OK:
 		return preflightDHCPWorkedError(name, result)

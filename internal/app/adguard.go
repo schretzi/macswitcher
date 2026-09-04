@@ -218,13 +218,13 @@ func syncAdGuardProtection(cfg Config, ctx SwitchContext) {
 	}
 	want := *ctx.ProtectionEnabled
 	if err := setAdGuardProtection(cfg, want); err != nil {
-		fmt.Printf("warning: could not turn AdGuard Home filtering %s: %v\n", enabledWord(want), err)
+		logf("warning: could not turn AdGuard Home filtering %s: %v\n", enabledWord(want), err)
 		if !want {
-			fmt.Println("warning: filtering is still on; if DNS fails below, that is why")
+			logf("warning: filtering is still on; if DNS fails below, that is why\n")
 		}
 		return
 	}
-	fmt.Printf("adguard filtering: %s\n", enabledWord(want))
+	logf("adguard filtering: %s\n", enabledWord(want))
 }
 
 func enabledWord(enabled bool) string {

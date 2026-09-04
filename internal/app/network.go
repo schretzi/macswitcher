@@ -70,7 +70,7 @@ func setLocalProxy(cfgPath string) error {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 	restartProxyConsumers(cfg)
-	fmt.Println("local proxy set")
+	logf("local proxy set\n")
 	return nil
 }
 
@@ -108,7 +108,7 @@ func unsetLocalProxy(cfgPath string) error {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 	restartProxyConsumers(cfg)
-	fmt.Println("local proxy unset")
+	logf("local proxy unset\n")
 	return nil
 }
 
@@ -306,10 +306,10 @@ func searchDomainArgs(cfg Config, service string) []string {
 // actually decides whether the switch can continue.
 func flushDNSCache() {
 	if err := runCommand("sudo", "-n", "/usr/bin/dscacheutil", "-flushcache"); err != nil {
-		fmt.Printf("warning: dscacheutil -flushcache failed (add \"NOPASSWD: /usr/bin/dscacheutil -flushcache\" to sudoers?): %v\n", err)
+		logf("warning: dscacheutil -flushcache failed (add \"NOPASSWD: /usr/bin/dscacheutil -flushcache\" to sudoers?): %v\n", err)
 	}
 	if err := runCommand("sudo", "-n", "/usr/bin/killall", "-HUP", "mDNSResponder"); err != nil {
-		fmt.Printf("warning: killall -HUP mDNSResponder failed (add \"NOPASSWD: /usr/bin/killall -HUP mDNSResponder\" to sudoers?): %v\n", err)
+		logf("warning: killall -HUP mDNSResponder failed (add \"NOPASSWD: /usr/bin/killall -HUP mDNSResponder\" to sudoers?): %v\n", err)
 	}
 }
 
@@ -348,7 +348,7 @@ func checkDNSResolution(ctx SwitchContext) error {
 			return err
 		}
 		if attempt == 1 {
-			fmt.Printf("waiting for %s to resolve (up to %s)...\n", host, dnsResolveTimeout)
+			logf("waiting for %s to resolve (up to %s)...\n", host, dnsResolveTimeout)
 		}
 		time.Sleep(dnsResolvePollInterval)
 	}
@@ -476,10 +476,10 @@ func preservedAdGuardUpstreams(path string) []string {
 func restartAdGuardIfConfigured(cfg Config) {
 	commands, ok := cfg.Applications[appAdGuard]
 	if !ok || len(commands.Restart) == 0 {
-		fmt.Println("warning: no applications.adguardhome.restart configured; AdGuard Home may keep serving stale upstreams")
+		logf("warning: no applications.adguardhome.restart configured; AdGuard Home may keep serving stale upstreams\n")
 		return
 	}
 	if err := runApplicationAction(appAdGuard, actionRestart, commands); err != nil {
-		fmt.Printf("warning: could not restart AdGuard Home: %v\n", err)
+		logf("warning: could not restart AdGuard Home: %v\n", err)
 	}
 }
