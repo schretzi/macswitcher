@@ -428,7 +428,8 @@ Collects the machine's whole network and daemon state into
 | --- | --- |
 | `report.md` | the summary — read this first; stands on its own |
 | `meta.txt` | version, current context, from → to, reason |
-| `switch-history.log` | the last few blocks of the switch transcript |
+| `switch.log` | the switch that just failed, if the snapshot came from one |
+| `switch-history.log` | the five switches before it — first failure or fourth? |
 | `dns-probes.txt` | each preflight/check name, resolved or not |
 | `daemons/<name>.status.txt` | full state, pid, runs, last exit, detail |
 | `daemons/<name>.log.txt` | last 300 lines of that daemon's log |
