@@ -344,3 +344,40 @@ func preflight(cfg Config, ctx SwitchContext, name string) error {
 		return preflightError(name, result)
 	}
 }
+
+// preflightContext is the standalone `macswitcher preflight CONTEXT`.
+//
+// Deliberately the same code path as the check inside switch, including the
+// DHCP retry. A diagnostic that behaved differently from the thing it
+// diagnoses would answer the wrong question.
+func preflightContext(cfgPath, name string) error {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	ctx, ok := cfg.Contexts[name]
+	if !ok {
+		return fmt.Errorf("context %q not found", name)
+	}
+
+	result, err := runPreflight(cfg, ctx)
+	if err != nil {
+		return err
+	}
+	if len(result.Hosts) == 0 {
+		fmt.Printf("preflight for context %s: nothing to check\n"+
+			"hint: set dns.check_host or preflight_hosts on this context - the VPN gateway is\n"+
+			"      usually the name worth naming, since a switch cannot start the tunnel\n"+
+			"      without resolving it.\n", name)
+		return nil
+	}
+	switch {
+	case result.OK && !result.UsedDHCP:
+		fmt.Printf("preflight for context %s: ok (%s resolve)\n", name, strings.Join(result.Hosts, ", "))
+		return nil
+	case result.OK:
+		return preflightDHCPWorkedError(name, result)
+	default:
+		return preflightError(name, result)
+	}
+}

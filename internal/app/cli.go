@@ -29,6 +29,11 @@ func Root() *cobra.Command {
 	return newRootCommand()
 }
 
+// groupContext is the help group for the commands that act on a context.
+// A constant because it is now named by three commands plus the group itself,
+// and a typo would silently drop a command out of the group rather than fail.
+const groupContext = "context"
+
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:               "macswitcher",
@@ -44,7 +49,7 @@ func newRootCommand() *cobra.Command {
 		"global config file (default: ~/.config/macswitcher/config.yaml)",
 	)
 	root.AddGroup(
-		&cobra.Group{ID: "context", Title: "Context commands:"},
+		&cobra.Group{ID: groupContext, Title: "Context commands:"},
 		&cobra.Group{ID: "proxy", Title: "Proxy commands:"},
 		&cobra.Group{ID: "config", Title: "Configuration commands:"},
 		&cobra.Group{ID: "service", Title: "Service commands:"},
@@ -52,6 +57,7 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(
 		contextCommand(),
+		preflightCommand(),
 		statusCommand(),
 		proxyCommand(),
 		configCommand(),
@@ -75,10 +81,10 @@ func configuredPath() (string, error) {
 func contextCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:     "switch CONTEXT",
-		Aliases: []string{"context"},
+		Aliases: []string{groupContext},
 		Short:   "Switch the active network context",
 		Args:    cobra.ExactArgs(1),
-		GroupID: "context",
+		GroupID: groupContext,
 		RunE: func(_ *cobra.Command, args []string) error {
 			path, err := configuredPath()
 			if err != nil {
@@ -88,6 +94,37 @@ func contextCommand() *cobra.Command {
 		},
 	}
 	return command
+}
+
+// preflightCommand runs the check switch runs, without switching.
+//
+// Worth its own verb because the check answers a question you have when you
+// are already stuck: `switch` has just failed, and you want to know whether
+// the network is broken or only the resolvers are. Making that answer
+// reachable only by triggering the failure again would be a poor trade.
+//
+// It includes the DHCP fallback for the same reason. A preflight that
+// stopped at "these names do not resolve" would report the symptom the
+// operator already has and leave the actual question unanswered.
+func preflightCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "preflight CONTEXT",
+		Short: "Check that a context's DNS prerequisites resolve, without switching",
+		Long: "Resolve every name a switch into CONTEXT depends on - dns.check_host, the\n" +
+			"forward proxy's hostname, and anything in preflight_hosts - and report what\n" +
+			"fails. If nothing resolves, the resolvers are handed back to DHCP for one\n" +
+			"more attempt and then restored, so a failure says whether the network or the\n" +
+			"DNS configuration is at fault. Nothing else is changed.",
+		Args:    cobra.ExactArgs(1),
+		GroupID: groupContext,
+		RunE: func(_ *cobra.Command, args []string) error {
+			path, err := configuredPath()
+			if err != nil {
+				return err
+			}
+			return preflightContext(path, args[0])
+		},
+	}
 }
 
 func statusCommand() *cobra.Command {

@@ -272,6 +272,7 @@ Validate all global and context files with `./macswitcher config validate`.
 ./macswitcher switch home
 ./macswitcher switch remote
 ./macswitcher switch work
+./macswitcher preflight work
 ./macswitcher status
 ./macswitcher proxy set
 ./macswitcher proxy unset
@@ -290,6 +291,8 @@ stores contexts under `contexts/`.
 
 `macswitcher switch <context>` runs, in order:
 
+0. **Preflight** — resolve the names the switch depends on, before anything is
+   changed. See [Preflight](#preflight) below.
 1. Persist the selected context as current (survives even if later steps warn/fail).
 2. `scselect` the context's macOS network location, if set (warns, doesn't abort, on failure).
 3. Run the context's app/VPN hooks, while the machine can still resolve names
@@ -325,6 +328,62 @@ your-user ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/net.unbound
 
 Without these, steps 4/7 just print a warning and `switch` continues; step 8
 will then fail fast if DNS genuinely isn't working yet.
+
+### Preflight
+
+Step 3 above starts the VPN *before* the resolvers are repointed, and that
+ordering is deliberate: the tunnel has to resolve its own gateway through the
+network the machine is still on. The consequence is that the whole switch
+depends on the resolvers that are configured *right now* working.
+
+When they do not, the failure is a dead end rather than a slow path.
+`openconnect` fails with `getaddrinfo failed`, the switch is rolled back to the
+previous context — whose resolvers are equally broken — and every subsequent
+attempt fails identically. The machine cannot switch its way out.
+
+Preflight asks the question first. It resolves:
+
+- `dns.check_host`, if the context sets one;
+- the forward proxy's own hostname, in `forward` mode;
+- everything in the context's `preflight_hosts`.
+
+If any of them fail, it hands **every** network service back to DHCP, tries
+once more, and then restores the resolvers exactly as they were — always,
+including on `Ctrl-C`. That second answer is the diagnosis:
+
+| second attempt | meaning | fix |
+| --- | --- | --- |
+| resolves with DHCP | the network is fine, the DNS configuration is not | fix the local resolver (AdGuard Home, `macswitcher observe`), or switch to a context this network can reach |
+| still fails | the problem is upstream of DNS configuration | the link itself: Wi-Fi/Ethernet, a captive portal, VPN reachability |
+
+The DHCP attempt is a *diagnosis*, never a repair — leaving the machine on
+DHCP would be a third state that is neither the old context nor the new one.
+So a context that only passes via DHCP is still a failed switch; it just fails
+with something you can act on.
+
+A context that declares none of the three names is not checked. `google.com`
+is a fine default for "did the switch work" *afterwards*, but as a
+precondition it would refuse to switch on any network that resolves only its
+own intranet.
+
+`preflight_hosts` is where the VPN gateway belongs:
+
+```yaml
+contexts:
+  work:
+    preflight_hosts:
+      - vpn.corp.example
+```
+
+macswitcher does not derive that name itself. On this setup it lives in
+`~/.config/corp-vpn/corp-vpn.conf`, read by a shell script — an employer's
+layout, which a general tool has no business knowing. As data in a context it
+costs one line.
+
+`macswitcher preflight <context>` runs exactly the same check, including the
+DHCP fallback, without switching. That is the point of it: you reach for it
+when a switch has *already* failed and you want the diagnosis without
+triggering the failure again.
 
 ### AdGuard Home filtering per context
 
