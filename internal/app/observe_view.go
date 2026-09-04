@@ -22,8 +22,14 @@ var (
 			Padding(0, 1)
 	styleTabActive   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 	styleFollowOn    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	listKeyHints     = "↑/↓ select  l logs  s start  S stop  R restart  e enable  d disable  r refresh  q quit"
+	styleCurrentCtx  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	listKeyHints     = "↑/↓ select  l logs  s start  h halt  R restart  e enable  d disable  S switch  r refresh  q quit"
 	logKeyHintFormat = "↑/↓ scroll  pgup/pgdn page  tab switch  f follow (%s)  r reload  esc close"
+	// switchPickKeyHints and the two below are the three phases of the S
+	// modal: choosing, running (no key does anything), and finished.
+	switchPickKeyHints = "↑/↓ select  enter switch  esc cancel"
+	switchRunKeyHints  = "switching… keys are ignored until it finishes"
+	switchDoneKeyHints = "↑/↓ scroll  enter/esc close"
 )
 
 const (
@@ -58,6 +64,9 @@ const followOff = "off"
 func (m observeModel) View() string {
 	if m.quitting {
 		return ""
+	}
+	if m.switcher.open {
+		return m.switchModalView()
 	}
 	if m.logs.open {
 		return m.logModalView()
@@ -234,4 +243,60 @@ func pad(s string, width int) string {
 		return s + strings.Repeat(" ", gap)
 	}
 	return s
+}
+
+// switchModalView renders the S modal in whichever of its three phases it is
+// in: the context picker, or the switch output while it runs and once it has
+// finished.
+func (m observeModel) switchModalView() string {
+	width, _ := m.modalViewportSize()
+
+	var b strings.Builder
+	title := "switch context"
+	if m.switcher.phase != switchPhasePick {
+		title += " → " + m.switcher.selected
+	}
+	b.WriteString(clip(styleHeader.Render(title), width) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("─", width)) + "\n")
+
+	hints := switchDoneKeyHints
+	switch m.switcher.phase {
+	case switchPhasePick:
+		hints = switchPickKeyHints
+		b.WriteString(m.switchPickBody(width))
+	case switchPhaseRun:
+		hints = switchRunKeyHints
+		b.WriteString(m.switcher.viewport.View())
+	case switchPhaseDone:
+		b.WriteString(m.switcher.viewport.View())
+	}
+
+	b.WriteString("\n" + clip(styleDim.Render(hints), width))
+	box := styleBox.Width(width + boxPadding).Render(b.String())
+	return lipgloss.Place(m.termWidth(), m.termHeight(), lipgloss.Center, lipgloss.Center, box)
+}
+
+// switchPickBody lists the configured contexts. The cursor row and the active
+// context are styled differently rather than one winning over the other, so
+// "where am I" stays readable once the cursor has moved away.
+func (m observeModel) switchPickBody(width int) string {
+	var b strings.Builder
+	for i, name := range m.switcher.contexts {
+		cursor := "  "
+		if i == m.switcher.cursor {
+			cursor = "> "
+		}
+		line := cursor + name
+		if name == m.switcher.current {
+			line += "  (current)"
+		}
+		switch {
+		case i == m.switcher.cursor:
+			line = styleSelected.Render(line)
+		case name == m.switcher.current:
+			line = styleCurrentCtx.Render(line)
+		}
+		b.WriteString(clip(line, width) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

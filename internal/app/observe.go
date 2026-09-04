@@ -49,7 +49,10 @@ type daemonRow struct {
 }
 
 type observeModel struct {
-	cfg          Config
+	cfg Config
+	// cfgPath is kept so the switch modal can pass --config to the child
+	// process and reload the config after a switch rewrote current_context.
+	cfgPath      string
 	rows         []daemonRow
 	cursor       int
 	width        int
@@ -58,6 +61,7 @@ type observeModel struct {
 	messageIsErr bool
 	quitting     bool
 	logs         logModal
+	switcher     switchModal
 }
 
 // Observe starts the interactive TUI showing the status of macswitcher's own
@@ -69,13 +73,13 @@ func Observe(cfgPath string) error {
 	if err != nil {
 		return err
 	}
-	m := newObserveModel(cfg)
+	m := newObserveModel(cfg, cfgPath)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
 }
 
-func newObserveModel(cfg Config) observeModel {
+func newObserveModel(cfg Config, cfgPath string) observeModel {
 	rows := []daemonRow{
 		// macswitcher's own job, so its label comes from internal/service
 		// rather than from config: it is not something the user can point
@@ -100,7 +104,7 @@ func newObserveModel(cfg Config) observeModel {
 		{name: "tunneling", configKey: "tunneling", label: cfg.Daemons["tunneling"].Label, scope: cfg.Daemons["tunneling"].Scope, kind: daemonKindTunneling, cfgDaemon: cfg.Daemons["tunneling"]},
 	}
 	rows = append(rows, genericDaemonRows(cfg)...)
-	return observeModel{cfg: cfg, rows: rows}
+	return observeModel{cfg: cfg, cfgPath: cfgPath, rows: rows}
 }
 
 // genericDaemonRows turns any daemons: entry macswitcher has no built-in
@@ -370,6 +374,9 @@ func vpnDetail(cfg Config) []string {
 func (m observeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.switcher.open {
+			return m.handleSwitchKey(msg)
+		}
 		if m.logs.open {
 			return m.handleLogKey(msg)
 		}
@@ -378,7 +385,10 @@ func (m observeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.logs.setSize(m.modalViewportSize())
+		m.switcher.setSize(m.modalViewportSize())
 		return m, nil
+	case switchEventMsg:
+		return m.handleSwitchEvent(msg)
 	case logLoadedMsg:
 		return m.handleLogLoaded(msg)
 	case logFollowMsg:
@@ -392,11 +402,11 @@ func (m observeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionResultMsg:
 		row := m.rows[msg.index]
 		if msg.err != nil {
-			m.message = fmt.Sprintf("%s %s failed: %v", row.name, msg.verb, msg.err)
+			m.message = fmt.Sprintf("%s %s failed: %v", row.name, displayVerb(msg.verb), msg.err)
 			m.messageIsErr = true
 			return m, nil
 		}
-		m.message = fmt.Sprintf("%s: %s ok", row.name, msg.verb)
+		m.message = fmt.Sprintf("%s: %s ok", row.name, displayVerb(msg.verb))
 		m.messageIsErr = false
 		return m, refreshRowCmd(m.cfg, msg.index, row)
 	case tickMsg:
@@ -410,9 +420,18 @@ func (m observeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// keyInterrupt is ctrl+c. Every modal binds it alongside its own close key,
+// because a terminal user reaches for it out of habit and a TUI that ignores
+// it looks hung.
+const keyInterrupt = "ctrl+c"
+
+// keyEscape is esc, bound as "go back one level" throughout: it closes a
+// modal, answers a confirmation with no, and quits from the list.
+const keyEscape = "esc"
+
 func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "ctrl+c", "esc":
+	case "q", keyInterrupt, keyEscape:
 		m.quitting = true
 		return m, tea.Quit
 	case "up", "k":
@@ -431,16 +450,28 @@ func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openLogModal()
 	case "s":
 		return m, m.actionCmd(actionStart)
-	case "S":
+	case "h":
 		return m, m.actionCmd(actionStop)
+	case "S":
+		return m.openSwitchModal()
 	case "R":
 		return m, m.actionCmd(actionRestart)
 	case "e":
-		return m, m.actionCmd("enable")
+		return m, m.actionCmd(actionEnable)
 	case "d":
-		return m, m.actionCmd("disable")
+		return m, m.actionCmd(actionDisable)
 	}
 	return m, nil
+}
+
+// displayVerb is the wording the TUI uses for an action. The launchd verb
+// stays "stop" everywhere it is a protocol value (config, systemDaemonActionCmd,
+// launchdStop); "halt" is only what the operator reads, matching the h key.
+func displayVerb(verb string) string {
+	if verb == actionStop {
+		return "halt"
+	}
+	return verb
 }
 
 func (m observeModel) refreshAllCmd() tea.Cmd {
@@ -479,25 +510,31 @@ func (m observeModel) actionCmd(verb string) tea.Cmd {
 			return actionResultMsg{index: index, verb: verb, err: runDaemonOverrideCommand(override)}
 		}
 	}
-	var action func(label, scope string) error
-	switch verb {
-	case actionStart:
-		action = launchdStart
-	case actionStop:
-		action = launchdStop
-	case actionRestart:
-		action = launchdRestart
-	case "enable":
-		action = launchdEnable
-	case "disable":
-		action = launchdDisable
-	default:
+	action, ok := launchdActions[verb]
+	if !ok {
 		err := fmt.Errorf("unknown action %q", verb)
 		return func() tea.Msg { return actionResultMsg{index: index, verb: verb, err: err} }
 	}
 	return func() tea.Msg {
 		return actionResultMsg{index: index, verb: verb, err: action(row.label, row.scope)}
 	}
+}
+
+// launchdActions maps an observe verb to the launchctl operation behind it.
+//
+// It is a var, and the only path from actionCmd to launchd, so a test can
+// replace it wholesale with stubs. That is not a convenience: the alpaca row
+// takes its label from launchAgentService(), not from config, so it is
+// always macswitcher's own real launch agent no matter what Config a test
+// builds. A test that executed the tea.Cmd actionCmd returns therefore used
+// to stop the operator's actual proxy - every `go test` run took the machine
+// off the network. Tests must call stubLaunchdActions.
+var launchdActions = map[string]func(label, scope string) error{
+	actionStart:   launchdStart,
+	actionStop:    launchdStop,
+	actionRestart: launchdRestart,
+	actionEnable:  launchdEnable,
+	actionDisable: launchdDisable,
 }
 
 // openLogModal opens the log viewer on the selected row. A row with no
@@ -550,7 +587,7 @@ func (m observeModel) handleLogFollow(msg logFollowMsg) (tea.Model, tea.Cmd) {
 
 func (m observeModel) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "l", "ctrl+c":
+	case keyEscape, "q", "l", keyInterrupt:
 		m.logs = logModal{}
 		return m, nil
 	case "tab", "shift+tab":

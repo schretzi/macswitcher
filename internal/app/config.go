@@ -262,6 +262,12 @@ const (
 	actionStop    = "stop"
 	actionRestart = "restart"
 	actionReload  = "reload"
+	// actionEnable and actionDisable are observe-only: unlike the four
+	// above they are not service commands a context can configure, they map
+	// to launchctl enable/disable - a persisted override that outlives a
+	// reboot, which is why disable counts as destructive.
+	actionEnable  = "enable"
+	actionDisable = "disable"
 )
 
 // Names of the managed applications macswitcher knows about by name, as used

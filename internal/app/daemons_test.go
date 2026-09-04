@@ -261,7 +261,7 @@ func TestDaemonsConfigWarningListsEveryKnownField(t *testing.T) {
 func TestObserveHasARowForEveryKnownDaemonKey(t *testing.T) {
 	t.Parallel()
 
-	rows := newObserveModel(Config{}).rows
+	rows := newObserveModel(Config{}, "").rows
 	haveRow := make(map[string]bool, len(rows))
 	for _, r := range rows {
 		haveRow[r.configKey] = true

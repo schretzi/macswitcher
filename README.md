@@ -451,12 +451,27 @@ actions run `sudo launchctl ...` interactively, suspending the TUI and
 handing the real terminal to `sudo` so it can prompt for your password, then
 resuming once it exits.
 
-Keys: `↑`/`↓` or `j`/`k` to select a row, `s` start, `S` stop, `R` restart,
-`e` enable, `d` disable, `r` to refresh immediately, `q`/`Esc`/`Ctrl-C` to
-quit. Start/stop map to `launchctl bootstrap`/`bootout` (load state right
-now); enable/disable map to `launchctl enable`/`disable` (a persisted
-override independent of whether the agent is currently loaded, so a
-disabled agent stays off across reboots even with `RunAtLoad` set).
+Keys: `↑`/`↓` or `j`/`k` to select a row, `s` start, `h` halt, `R` restart,
+`e` enable, `d` disable, `l` logs, `S` switch context, `r` to refresh
+immediately, `q`/`Esc`/`Ctrl-C` to quit. Start/halt map to `launchctl
+bootstrap`/`bootout` (load state right now); enable/disable map to `launchctl
+enable`/`disable` (a persisted override independent of whether the agent is
+currently loaded, so a disabled agent stays off across reboots even with
+`RunAtLoad` set).
+
+### Switching context from the TUI
+
+`S` opens a modal listing every configured context, with the cursor on — and
+the name of — the active one. `Enter` switches to the selected context, `Esc`
+cancels.
+
+The switch runs as a child `macswitcher switch <context>` process and its
+output is streamed into the modal, so what you read there is byte for byte
+what the command prints on a terminal. While it runs, every key is ignored:
+a context switch rewrites DNS, the proxy and several daemons in sequence, and
+interrupting it halfway would leave the machine in a state no rollback
+covers. Once it finishes, `Enter` or `Esc` closes the modal and the list
+behind it is reloaded from the rewritten config.
 
 
 ## Development
