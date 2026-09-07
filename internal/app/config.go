@@ -19,6 +19,7 @@ type Config struct {
 	NetworkServices []string                       `yaml:"network_services" mapstructure:"network_services"`
 	DNS             DNSConfig                      `yaml:"dns" mapstructure:"dns"`
 	AdGuard         AdGuardConfig                  `yaml:"adguard" mapstructure:"adguard"`
+	Unbound         UnboundConfig                  `yaml:"unbound" mapstructure:"unbound"`
 	FilterProxy     FilterProxyConfig              `yaml:"filter_proxy" mapstructure:"filter_proxy"`
 	Daemons         map[string]DaemonConfig        `yaml:"daemons" mapstructure:"daemons"`
 	Applications    map[string]ApplicationCommands `yaml:"applications" mapstructure:"applications"`
@@ -117,6 +118,15 @@ type SwitchContext struct {
 
 type DNSConfig struct {
 	LocalResolver string `yaml:"local_resolver" mapstructure:"local_resolver"`
+	// Backend picks which local resolver a context switch actually rewrites:
+	// "adguard" (default) or "unbound". Both AdGuard.UpstreamsFile and
+	// Unbound.ForwardersFile may be configured at the same time - that is
+	// what lets one be set up and left running while the other is tried -
+	// but only the selected backend is ever written to or restarted by a
+	// switch. Flipping this value (and dns.local_resolver, to match the
+	// backend's own loopback alias) is how to test the other resolver
+	// without touching the one already relied on.
+	Backend string `yaml:"backend,omitempty" mapstructure:"backend"`
 }
 
 type ContextDNSConfig struct {
@@ -191,6 +201,16 @@ const (
 	defaultAdGuardAPIUser            = "zonesync"
 	defaultAdGuardAPIKeychainService = "adguardhome api"
 )
+
+// UnboundConfig points at unbound's forwarders file, which a context's
+// Upstreams are written into on every switch - only when dns.backend is
+// "unbound". Leave ForwardersFile empty and macswitcher never touches it,
+// which is exactly what a machine running only AdGuard Home wants: unbound
+// can be installed and even running, side by side, without macswitcher ever
+// writing to it.
+type UnboundConfig struct {
+	ForwardersFile string `yaml:"forwarders_file" mapstructure:"forwarders_file"`
+}
 
 // adguardAddress, adguardAPIUser and adguardAPIKeychainService apply the
 // defaults above without writing them into the config file, so a machine that
@@ -295,6 +315,11 @@ const (
 	// appAdGuard is AdGuard Home, the resolver this machine runs. A context
 	// switch rewrites its default upstreams and restarts it.
 	appAdGuard = "adguardhome"
+	// appUnbound is unbound, the other local resolver a context switch can
+	// rewrite - see dnsBackendUnbound. It can be installed and running at
+	// the same time as AdGuard Home; only whichever dns.backend selects gets
+	// written to and restarted.
+	appUnbound = "unbound"
 	// appContainer is Apple's container runtime, which kiac builds its cluster
 	// node VMs on. Watched rather than driven: macswitcher never starts or
 	// stops it, but a context switch is a common moment for it to be down.
@@ -338,6 +363,24 @@ const (
 	proxyStateOn       = "on"
 	proxyStateFiltered = "filtered"
 )
+
+// dns.backend values. dnsBackendAdGuard is the default - an empty or unset
+// value normalizes to it in loadConfig - so existing configs that predate
+// this field keep behaving exactly as before.
+const (
+	dnsBackendAdGuard = "adguard"
+	dnsBackendUnbound = "unbound"
+)
+
+// dnsBackend returns cfg's normalized DNS backend, defaulting to AdGuard
+// Home. loadConfig already rejects any other value, so callers do not need
+// to handle a third case.
+func dnsBackend(cfg Config) string {
+	if cfg.DNS.Backend == dnsBackendUnbound {
+		return dnsBackendUnbound
+	}
+	return dnsBackendAdGuard
+}
 
 // contextHome is the context `config init` seeds and falls back to.
 const contextHome = "home"
@@ -442,10 +485,15 @@ func initConfig(path string) error {
 		NetworkServices: nil,
 		DNS: DNSConfig{
 			LocalResolver: loopbackResolver,
+			Backend:       dnsBackendAdGuard,
 		},
 		AdGuard: AdGuardConfig{
 			UpstreamsFile: "/etc/adguardhome/upstreams.conf",
 		},
+		// Left unset (empty ForwardersFile) so a fresh config never writes to
+		// unbound - opt in by setting unbound.forwarders_file and
+		// dns.backend to "unbound".
+		Unbound: UnboundConfig{},
 		Applications: map[string]ApplicationCommands{
 			"docker": {
 				Start:   []string{"open", "-a", "Docker"},
@@ -574,21 +622,30 @@ func loadConfig(path string) (Config, error) { //nolint:gocyclo // TODO: split t
 	if len(cfg.Contexts) == 0 {
 		return cfg, errors.New("no context files found")
 	}
-	// Loudly, not silently. unbound is gone and the same list drives AdGuard
-	// Home's upstream_dns_file now, so a context left on the old key would
-	// switch networks without changing a single upstream - working, quiet, and
-	// forwarding to the previous network's resolvers.
+	// Loudly, not silently. unbound_forwarders was renamed to upstreams
+	// (which now feeds whichever backend dns.backend selects - AdGuard Home
+	// or unbound), so a context left on the old key would switch networks
+	// without changing a single upstream - working, quiet, and forwarding to
+	// the previous network's resolvers.
 	for name, context := range cfg.Contexts {
 		if len(context.UnboundForwardersRemoved) > 0 {
 			return cfg, fmt.Errorf(
 				"contexts.%s still uses unbound_forwarders; rename the key to upstreams "+
-					"(unbound has been replaced by AdGuard Home, and the same list is now "+
-					"written to its upstream_dns_file)", name,
+					"(the same list now feeds whichever dns.backend selects, adguard or "+
+					"unbound)", name,
 			)
 		}
 	}
 	if cfg.DNS.LocalResolver == "" {
 		cfg.DNS.LocalResolver = loopbackResolver
+	}
+	switch cfg.DNS.Backend {
+	case "":
+		cfg.DNS.Backend = dnsBackendAdGuard
+	case dnsBackendAdGuard, dnsBackendUnbound:
+		// valid, nothing to normalize
+	default:
+		return cfg, fmt.Errorf("dns.backend %q is invalid (must be adguard or unbound)", cfg.DNS.Backend)
 	}
 	if cfg.LocalProxy.Host == "" || cfg.LocalProxy.Port <= 0 {
 		return cfg, errors.New("invalid local_proxy values")

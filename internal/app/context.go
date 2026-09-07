@@ -29,27 +29,28 @@ func switchContext(cfgPath string, args []string) error {
 	journal := newSwitchJournal(previous, selected)
 	upstreamsSyncedEarly := false
 	err = func() error {
-		// A context whose DNS goes through the local resolver (AdGuard Home)
-		// can have that resolver's upstreams rewritten to the NEW context's
-		// before preflight runs, as long as nothing here depends on the
-		// network the machine is still on - which is exactly the case for a
-		// context that does not start a VPN. Doing this first means
-		// preflight tests what the switch is actually about to leave the
-		// machine on, rather than the PREVIOUS context's upstreams still
-		// sitting in AdGuard Home - the bug this fixes: switching onto a
-		// network whose internal names only the new context's upstreams can
-		// answer failed preflight every time, because AdGuard was still
-		// forwarding to the old network's resolvers and the corporate names
-		// the new context needs were never going to resolve through those.
+		// A context whose DNS goes through the local resolver (AdGuard Home
+		// or unbound, whichever dns.backend selects) can have that
+		// resolver's upstreams rewritten to the NEW context's before
+		// preflight runs, as long as nothing here depends on the network the
+		// machine is still on - which is exactly the case for a context that
+		// does not start a VPN. Doing this first means preflight tests what
+		// the switch is actually about to leave the machine on, rather than
+		// the PREVIOUS context's upstreams still sitting in the resolver -
+		// the bug this fixes: switching onto a network whose internal names
+		// only the new context's upstreams can answer failed preflight every
+		// time, because the resolver was still forwarding to the old
+		// network's resolvers and the corporate names the new context needs
+		// were never going to resolve through those.
 		//
 		// A context that starts a VPN keeps the old order (see applyContext):
 		// the tunnel has to resolve its own gateway through the resolvers
-		// already in place, so rewriting AdGuard first would pull that
+		// already in place, so rewriting the resolver first would pull that
 		// resolution onto upstreams that live behind the tunnel that has not
 		// come up yet.
 		if !contextStartsVPN(ctx) && len(ctx.Upstreams) > 0 {
-			if err := journal.step("rewrite AdGuard Home's upstreams and restart it", func() error {
-				return syncAdGuardUpstreams(cfg, ctx.Upstreams, selected)
+			if err := journal.step("rewrite the DNS backend's upstreams and restart it", func() error {
+				return syncDNSBackendUpstreams(cfg, ctx.Upstreams, selected)
 			}); err != nil {
 				return err
 			}
@@ -173,27 +174,35 @@ func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string, jo
 		// Already done, before preflight - see switchContext. Redoing it here
 		// unconditionally would double-log a step that did not fail and,
 		// worse, would mask the case where something between the two steps
-		// left AdGuard Home in a different state than this rewrite expects.
-		journal.skip("rewrite AdGuard Home's upstreams (already applied before preflight)")
+		// left the resolver in a different state than this rewrite expects.
+		journal.skip("rewrite the DNS backend's upstreams (already applied before preflight)")
 	case len(ctx.Upstreams) > 0:
-		if err := journal.step("rewrite AdGuard Home's upstreams and restart it", func() error {
-			return syncAdGuardUpstreams(cfg, ctx.Upstreams, name)
+		if err := journal.step("rewrite the DNS backend's upstreams and restart it", func() error {
+			return syncDNSBackendUpstreams(cfg, ctx.Upstreams, name)
 		}); err != nil {
 			return err
 		}
 	default:
-		journal.skip("rewrite AdGuard Home's upstreams")
+		journal.skip("rewrite the DNS backend's upstreams")
 	}
 
-	// After the upstream sync, because that restarts AdGuard Home and a
-	// restart would drop a protection change made before it. Before the DNS
-	// check, because on a corporate network filtering is precisely what stops
-	// DNS from working - applying it afterwards would fail the switch at the
-	// check and never get here.
-	_ = journal.step("apply AdGuard Home's protection setting", func() error {
-		syncAdGuardProtection(cfg, ctx)
-		return nil
-	})
+	// After the upstream sync, because that restarts the resolver and a
+	// protection change made before it would otherwise be dropped. Before
+	// the DNS check, because on a corporate network filtering is precisely
+	// what stops DNS from working - applying it afterwards would fail the
+	// switch at the check and never get here.
+	//
+	// AdGuard-specific: unbound has no filtering API, so this is skipped
+	// entirely (not attempted, not even a warning) unless dns.backend is
+	// "adguard".
+	if dnsBackend(cfg) == dnsBackendAdGuard {
+		_ = journal.step("apply AdGuard Home's protection setting", func() error {
+			syncAdGuardProtection(cfg, ctx)
+			return nil
+		})
+	} else {
+		journal.skip("apply AdGuard Home's protection setting (dns.backend is unbound)")
+	}
 
 	if err := journal.step("point the network services at the local resolver", func() error {
 		return applyLocalResolverDNS(cfg)
@@ -244,6 +253,20 @@ func applyContextProxy(cfgPath string, ctx SwitchContext, journal *switchJournal
 	})
 }
 
+// syncDNSBackendUpstreams writes the context's default upstream resolvers
+// into whichever DNS backend dns.backend selects (AdGuard Home or unbound),
+// and restarts only that one. The other backend, if configured at all, is
+// never touched by this - both AdGuard.UpstreamsFile and
+// Unbound.ForwardersFile can be set at the same time, which is what makes it
+// safe to flip dns.backend and try the other resolver without disturbing
+// whichever one is already relied on.
+func syncDNSBackendUpstreams(cfg Config, forwarders []string, selected string) error {
+	if dnsBackend(cfg) == dnsBackendUnbound {
+		return syncUnboundForwarders(cfg, forwarders)
+	}
+	return syncAdGuardUpstreams(cfg, forwarders, selected)
+}
+
 // syncAdGuardUpstreams points AdGuard Home at the upstream resolvers this
 // context wants. Skipped entirely unless adguard.upstreams_file is set.
 //
@@ -261,6 +284,27 @@ func syncAdGuardUpstreams(cfg Config, forwarders []string, selected string) erro
 		return fmt.Errorf("write AdGuard Home upstreams: %w", err)
 	}
 	restartAdGuardIfConfigured(cfg)
+	return nil
+}
+
+// syncUnboundForwarders points unbound at the upstream resolvers this
+// context wants. Skipped entirely unless unbound.forwarders_file is set -
+// the same "opt-in only" shape as syncAdGuardUpstreams, and for the same
+// reason: a machine that has not chosen unbound as its backend must never
+// have this called, even if unbound happens to be installed.
+//
+// Failing here aborts the switch, for the same reason as
+// syncAdGuardUpstreams: a failed write leaves unbound forwarding to the
+// previous network's resolvers, and checkDNSResolution would not catch that
+// on its own.
+func syncUnboundForwarders(cfg Config, forwarders []string) error {
+	if strings.TrimSpace(cfg.Unbound.ForwardersFile) == "" {
+		return nil
+	}
+	if err := writeUnboundForwarders(cfg, forwarders); err != nil {
+		return fmt.Errorf("write unbound forwarders: %w", err)
+	}
+	restartUnboundIfConfigured(cfg)
 	return nil
 }
 
@@ -292,8 +336,10 @@ func status(cfgPath string) error {
 	logf("local_proxy: %s\n", proxyURL)
 	logf("filter_proxy: %s\n", filterProxyStatusLine(cfg, ctx))
 	logf("local_resolver: %s\n", cfg.DNS.LocalResolver)
+	logf("dns_backend: %s\n", dnsBackend(cfg))
 	logf("adguard_upstreams_file: %s\n", cfg.AdGuard.UpstreamsFile)
 	logf("adguard_filtering: %s\n", adguardProtectionStatusLine(cfg, ctx))
+	logf("unbound_forwarders_file: %s\n", cfg.Unbound.ForwardersFile)
 	logf("no_proxy: %s\n", noProxy)
 	logf("network_services configured: %d (0 means auto-detect)\n", len(cfg.NetworkServices))
 	fmt.Println("service:")

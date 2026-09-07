@@ -1,0 +1,68 @@
+# Global macswitcher config for the "Unbound + Alpaca" minimal scenario.
+#
+# What's deliberately absent from this file, and why:
+# - no `adguard:` block: leaving AdGuard.UpstreamsFile empty means
+#   macswitcher never touches AdGuard Home, even if it happens to be
+#   installed. dns.backend below is what actually selects unbound.
+# - no `filter_proxy:` enabled: no Privoxy, no TLS-inspecting filter. Direct
+#   contexts just have alpaca reach the internet itself.
+
+local_proxy:
+  host: 127.0.0.1
+  port: 3128
+  no_proxy:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+
+alpaca:
+  enabled: true
+  # `brew install samuong/alpaca/alpaca` puts this on PATH. The {{...}}
+  # placeholders are macswitcher's own - it fills them in from
+  # local_proxy.host/port and drops -C entirely when there is no PAC file
+  # for the active context (e.g. proxy_mode: direct).
+  command:
+    - alpaca
+    - -l
+    - "{{local_host}}"
+    - -p
+    - "{{local_port}}"
+    - -C
+    - "{{pac_file}}"
+
+network_services: []   # empty means auto-detect every active network service
+
+dns:
+  # Unbound, started by install.sh as a LaunchDaemon (root-owned, so it can
+  # bind port 53) on a dedicated loopback alias - 127.0.0.1:53 is already
+  # owned by mDNSResponder.
+  local_resolver: 127.0.0.2
+  # Picks unbound instead of the default (adguard). See unbound.forwarders_file
+  # below - only unbound is ever written to or restarted by a switch.
+  backend: unbound
+
+unbound:
+  # Rewritten with the active context's `upstreams` on every switch. unbound.conf
+  # `include`s this path for its default ("." ) forward-zone; the corporate-domain
+  # and VPN-gateway forward-zones stay in unbound.conf itself, untouched by
+  # macswitcher - see unbound.conf for why those two need to be permanent.
+  forwarders_file: /opt/homebrew/etc/unbound/conf.d/forwarders.conf
+
+daemons:
+  # install.sh runs unbound via `brew services`, which installs it as a
+  # LaunchDaemon under this label.
+  unbound:
+    label: homebrew.mxcl.unbound
+    scope: system
+
+applications:
+  unbound:
+    # `brew services restart` needs sudo for a system-scoped service; see
+    # install.sh's sudoers rule.
+    restart:
+      - sudo
+      - brew
+      - services
+      - restart
+      - unbound
+

@@ -1,0 +1,27 @@
+# "office" context: traffic goes through the corporate forward proxy, and
+# unbound's default upstreams (in its forwarders_file) point at the
+# corporate resolvers on every switch into this context.
+#
+# Replace every CHANGE-ME below with your employer's actual values, then run:
+#   macswitcher proxy password-set
+# to store the proxy password in Keychain (never put it in this file).
+mac_network_location: Automatic
+proxy_mode: forward
+upstreams:
+  - CHANGE-ME-10.0.0.1
+  - CHANGE-ME-10.0.0.2
+forwarder_proxy:
+  proxy_server: CHANGE-ME-proxy.example.com
+  port: 8080
+  username: CHANGE-ME-your-username
+  password_keychain_service: macswitcher-office-proxy
+  # password_keychain_account defaults to `username` above if omitted.
+  auth_allowlist:
+    - CHANGE-ME-proxy.example.com
+# If this context starts a VPN, add its gateway hostname here too - see
+# preflight_hosts in the main README. A minimal setup with no VPN can
+# leave this out. Its resolution never depends on the upstreams above -
+# see the permanent forward-zone for it in unbound.conf.
+# preflight_hosts:
+#   - CHANGE-ME-vpn.corp.example.com
+apps: {}

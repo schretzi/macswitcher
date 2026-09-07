@@ -160,3 +160,64 @@ func TestLoadConfigRejectsRenamedUnboundForwardersKey(t *testing.T) {
 		t.Fatalf("error does not name the new key: %v", err)
 	}
 }
+
+func writeMinimalConfig(t *testing.T, dnsBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "contexts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "current_context: home\nlocal_proxy:\n  host: 127.0.0.1\n  port: 3128\n"
+	if dnsBody != "" {
+		body += dnsBody
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "contexts", "home.yaml"), []byte("proxy_mode: direct\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "config.yaml")
+}
+
+// An empty (or absent) dns.backend must normalize to AdGuard Home, so every
+// config written before dns.backend existed keeps behaving exactly as it did.
+func TestLoadConfigDefaultsDNSBackendToAdGuard(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadConfig(writeMinimalConfig(t, ""))
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if got := dnsBackend(cfg); got != dnsBackendAdGuard {
+		t.Fatalf("dnsBackend() = %q, want %q", got, dnsBackendAdGuard)
+	}
+}
+
+func TestLoadConfigAcceptsUnboundBackend(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadConfig(writeMinimalConfig(t, "dns:\n  backend: unbound\n"))
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if got := dnsBackend(cfg); got != dnsBackendUnbound {
+		t.Fatalf("dnsBackend() = %q, want %q", got, dnsBackendUnbound)
+	}
+}
+
+// A typo in dns.backend must fail loudly rather than silently fall back to
+// AdGuard Home - the same reasoning as rejecting unbound_forwarders: a
+// context switch that quietly targets the wrong (or no) resolver looks like
+// it worked.
+func TestLoadConfigRejectsInvalidDNSBackend(t *testing.T) {
+	t.Parallel()
+
+	_, err := loadConfig(writeMinimalConfig(t, "dns:\n  backend: bind9\n"))
+	if err == nil {
+		t.Fatal("loadConfig() accepted an invalid dns.backend value")
+	}
+	if !strings.Contains(err.Error(), "dns.backend") {
+		t.Fatalf("error does not name dns.backend: %v", err)
+	}
+}

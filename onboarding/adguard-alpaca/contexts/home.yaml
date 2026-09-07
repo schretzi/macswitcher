@@ -1,0 +1,11 @@
+# "home" context: public upstream resolvers, no corporate proxy.
+mac_network_location: Automatic
+proxy_mode: direct
+# The VPN gateway/forward-proxy hostname override in upstreams.conf (see
+# install.sh) is a PER-DOMAIN line and survives every context switch
+# untouched - it does not need repeating here. Only the DEFAULT upstreams
+# (everything not covered by a per-domain override) come from this list.
+upstreams:
+  - 9.9.9.9
+  - 1.1.1.1
+apps: {}

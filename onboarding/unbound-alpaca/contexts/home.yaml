@@ -1,0 +1,14 @@
+# "home" context: no corporate proxy, alpaca reaches the internet directly.
+#
+# upstreams is written into unbound's forwarders_file (see config.yaml's
+# dns.backend: unbound) on every switch into this context - public resolvers,
+# since there is nothing corporate to reach from here. dns.resolvers is
+# intentionally omitted; it falls back to the global dns.local_resolver
+# (unbound's own loopback alias), which is the same for every context in
+# this scenario.
+mac_network_location: Automatic
+proxy_mode: direct
+upstreams:
+  - 9.9.9.9
+  - 1.1.1.1
+apps: {}

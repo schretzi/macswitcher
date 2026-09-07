@@ -249,14 +249,50 @@ file values.
 
 For a machine not managed by Ansible, `macswitcher config init` creates a
 `home` context from the current macOS network location, network services, DNS
-resolver, and readable Unbound forwarders, plus an intentionally empty `work`
-context.
+resolver, and the default upstreams already in AdGuard Home's
+`upstreams_file` (its default resolver, `dns.backend: adguard`), plus an
+intentionally empty `work` context.
 
-Unbound forwarders are managed at
+### Choosing a DNS backend: AdGuard Home or unbound
+
+`dns.backend` picks which local resolver a context switch actually rewrites
+and restarts: `adguard` (the default) or `unbound`. Only the selected
+backend is ever touched — the other one, even if fully configured and
+running, is left completely alone. This is what makes it safe to set both
+up at once and flip between them:
+
+```yaml
+dns:
+  local_resolver: 127.0.0.3   # match whichever backend is selected below
+  backend: adguard            # or: unbound
+adguard:
+  upstreams_file: /etc/adguardhome/upstreams.conf
+unbound:
+  forwarders_file: /opt/homebrew/etc/unbound/conf.d/forwarders.conf
+```
+
+Both `adguard.upstreams_file` and `unbound.forwarders_file` may be set at the
+same time — that is the point. A machine can keep AdGuard Home as its daily
+driver (`dns.backend: adguard`) while unbound sits installed and running
+alongside it on its own loopback alias, never written to. To actually try
+unbound: set `dns.backend: unbound`, point `dns.local_resolver` at unbound's
+own alias (its Ansible-installed default is `127.0.0.2`, distinct from
+AdGuard Home's `127.0.0.3`), and switch — AdGuard Home's `upstreams_file` is
+never opened, and its own daemon is never restarted. Set `dns.backend` back
+to `adguard` to switch back, with nothing to reinstall or reconfigure on
+either side.
+
+`dns.backend` must be `adguard` or `unbound`; anything else, including a
+typo, fails `macswitcher config validate` and every switch loudly rather than
+silently keeping the previous switch's resolvers in place.
+
+Unbound's forwarders are managed at `unbound.forwarders_file`, e.g.
 `/opt/homebrew/etc/unbound/conf.d/forwarders.conf`. Ansible initially links
 this path to its default `Dotfiles/unbound/forwarders.conf`. Before writing
 context-specific forwarders, macswitcher removes only that symlink and creates
-a real runtime-managed file, so the repository source is never modified.
+a real runtime-managed file, so the repository source is never modified —
+this applies only while `dns.backend` is `unbound`; while it is `adguard`,
+the forwarders file is never opened at all.
 
 Store forwarder proxy credentials in Keychain:
 
@@ -298,11 +334,17 @@ stores contexts under `contexts/`.
 2. `scselect` the context's macOS network location, if set (warns, doesn't abort, on failure).
 3. Run the context's app/VPN hooks, while the machine can still resolve names
    through the network it is currently on.
-4. Rewrite AdGuard Home's `upstream_dns_file` from the context's `upstreams`,
-   if any, and restart it via `applications.adguardhome.restart` (warns if
-   that's not configured — a stale upstreams load is a common source of
-   "it takes forever after switching" symptoms).
-5. Apply the context's `protection_enabled`, if set — after the restart above,
+4. Rewrite the selected DNS backend's upstreams from the context's
+   `upstreams`, if any — AdGuard Home's `upstream_dns_file`, or unbound's
+   `forwarders_file`, whichever `dns.backend` selects — and restart only that
+   backend, via `applications.adguardhome.restart` or
+   `applications.unbound.restart` respectively (warns if that's not
+   configured — a stale upstreams load is a common source of "it takes
+   forever after switching" symptoms). The other backend, even if fully
+   configured, is never opened or restarted by this step.
+5. Apply the context's `protection_enabled`, if set and `dns.backend` is
+   `adguard` (unbound has no filtering API, so this step is skipped
+   entirely when `dns.backend` is `unbound`) — after the restart above,
    which would otherwise undo it, and before the DNS check below, because on a
    corporate network filtering is exactly what stops DNS from working.
 6. Point the network services' DNS servers at `dns.local_resolver` (or the
@@ -324,8 +366,13 @@ matching passwordless-sudo sudoers entries, e.g.:
 ```
 your-user ALL=(root) NOPASSWD: /usr/bin/dscacheutil -flushcache
 your-user ALL=(root) NOPASSWD: /usr/bin/killall -HUP mDNSResponder
-your-user ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/net.unbound
+your-user ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/com.macswitcher.adguardhome
 ```
+
+The last line's target depends on `dns.backend`: it restarts whichever
+backend's `applications.<name>.restart` command is actually configured — the
+LaunchDaemon label used by AdGuard Home, or, for `dns.backend: unbound`,
+unbound's own (e.g. `system/net.unbound`).
 
 Without these, steps 4/7 just print a warning and `switch` continues; step 8
 will then fail fast if DNS genuinely isn't working yet.
@@ -528,8 +575,16 @@ status of every daemon macswitcher cares about, refreshed automatically every
   launchd restart counter (`runs`), and the active context's `proxy_mode`
   plus, in `forward` mode, the upstream host:port and whether auth is
   Keychain- or Kerberos-based.
+- **adguardhome** — shows running/stopped, the default upstreams currently
+  in `adguard.upstreams_file`, how many per-domain overrides are preserved
+  alongside them, and calls out filtering that is off. Only what a switch
+  actually rewrites when `dns.backend` is `adguard`.
 - **unbound** — shows running/stopped and the `forward-addr` entries
-  currently in `unbound.forwarders_file`.
+  currently in `unbound.forwarders_file`. Only what a switch actually
+  rewrites when `dns.backend` is `unbound`; while `dns.backend` is `adguard`
+  the row still shows unbound's current forwarders (from whichever switch
+  last had `dns.backend: unbound`), noting that a switch does not rewrite
+  them.
 - **kerberoskeepalive** — shows running/stopped and, for the `ccache_path` of
   `KerberosKeepAlive`'s first profile, whether `klist` reports a valid,
   non-expired ticket. An invalid ticket is reported as survivable, because
@@ -547,12 +602,14 @@ status of every daemon macswitcher cares about, refreshed automatically every
   whatever the rows above set up, so a failure here is usually a symptom of
   one of them.
 
-unbound, KerberosKeepAlive, omt, vpn, and tunneling are not installed by macswitcher
-(they come from Homebrew or an external Ansible role/script), so their
-launchd labels must be configured explicitly:
+AdGuard Home, unbound, KerberosKeepAlive, omt, vpn, and tunneling are not
+installed by macswitcher (they come from Homebrew or an external Ansible
+role/script), so their launchd labels must be configured explicitly:
 
 ```yaml
 daemons:
+  adguardhome:
+    label: com.macswitcher.adguardhome
   unbound:
     label: homebrew.mxcl.unbound   # this is the default if omitted
   kerberos_keep_alive:

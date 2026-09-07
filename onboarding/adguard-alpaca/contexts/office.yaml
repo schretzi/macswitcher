@@ -1,0 +1,32 @@
+# "office" context: traffic goes through the corporate forward proxy, and
+# AdGuard Home's default upstreams point at the corporate resolvers.
+#
+# Replace every CHANGE-ME below with your employer's actual values, then run:
+#   macswitcher proxy password-set
+# to store the proxy password in Keychain (never put it in this file).
+mac_network_location: Automatic
+proxy_mode: forward
+upstreams:
+  - CHANGE-ME-10.0.0.1
+  - CHANGE-ME-10.0.0.2
+forwarder_proxy:
+  proxy_server: CHANGE-ME-proxy.example.com
+  port: 8080
+  username: CHANGE-ME-your-username
+  password_keychain_service: macswitcher-office-proxy
+  # password_keychain_account defaults to `username` above if omitted.
+  auth_allowlist:
+    - CHANGE-ME-proxy.example.com
+# Your corporate resolvers usually cannot fetch AdGuard Home's filter
+# lists (they're internal-only), which would otherwise deadlock DNS on
+# every switch into this context. Filtering is redundant here anyway -
+# corporate networks filter their own traffic. See onboarding/README.md
+# and the main project README's "AdGuard Home filtering per context"
+# section for the full story.
+protection_enabled: false
+# If this context starts a VPN, add its gateway hostname here too - see
+# preflight_hosts in the main README. A minimal setup with no VPN can
+# leave this out.
+# preflight_hosts:
+#   - CHANGE-ME-vpn.corp.example.com
+apps: {}

@@ -483,3 +483,83 @@ func restartAdGuardIfConfigured(cfg Config) {
 		logf("warning: could not restart AdGuard Home: %v\n", err)
 	}
 }
+
+// writeUnboundForwarders rewrites unbound's forwarders file with a single
+// "forward-zone: name: \".\"" block listing forwarders as forward-addr
+// entries. Only called when dns.backend is "unbound" and
+// unbound.forwarders_file is set; a machine running unbound only to keep it
+// around for later, or running it side by side with AdGuard Home while
+// dns.backend stays "adguard", never has this called and the file is left
+// exactly as it is.
+func writeUnboundForwarders(cfg Config, forwarders []string) error {
+	path := strings.TrimSpace(cfg.Unbound.ForwardersFile)
+	if path == "" {
+		return errors.New("unbound.forwarders_file is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove forwarders symlink: %w", err)
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect forwarders file: %w", err)
+	}
+	lines := []string{
+		"# Managed by macswitcher, rewritten on every switch while dns.backend is unbound.",
+		"forward-zone:",
+		"  name: \".\"",
+	}
+	for _, fwd := range forwarders {
+		f := strings.TrimSpace(fwd)
+		if f == "" {
+			continue
+		}
+		lines = append(lines, "  forward-addr: "+f)
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	return os.WriteFile(path, []byte(content), 0o644) // #nosec G306 -- must stay readable by the unbound service, which may run under a different system user
+}
+
+// currentUnboundForwarders reads back the forward-addr entries already in
+// path, for `config init` (to seed a fresh home context) and `observe` (to
+// show unbound's current forwarders). Returns nil, without error, if path is
+// empty or unreadable - both are normal states for a machine that has not
+// configured unbound.
+func currentUnboundForwarders(path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- path comes from the operator's own config
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if addr, ok := strings.CutPrefix(trimmed, "forward-addr:"); ok {
+			out = append(out, strings.TrimSpace(addr))
+		}
+	}
+	return out
+}
+
+// restartUnboundIfConfigured runs the applications.unbound restart command
+// (if configured) after forwarders.conf has been rewritten, so unbound
+// actually picks up the new forward-addr entries instead of continuing to
+// answer from stale cached upstreams. Best-effort for the same reason as
+// restartAdGuardIfConfigured: checkDNSResolution is what actually gates the
+// switch.
+func restartUnboundIfConfigured(cfg Config) {
+	commands, ok := cfg.Applications[appUnbound]
+	if !ok || len(commands.Restart) == 0 {
+		logf("warning: no applications.unbound.restart configured; unbound may keep serving stale forwarders\n")
+		return
+	}
+	if err := runApplicationAction(appUnbound, actionRestart, commands); err != nil {
+		logf("warning: could not restart unbound: %v\n", err)
+	}
+}

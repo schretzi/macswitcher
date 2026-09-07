@@ -232,6 +232,146 @@ func TestWriteAdGuardUpstreamsRequiresConfiguredPath(t *testing.T) {
 	}
 }
 
+// writeUnboundForwarders must never follow a symlink and rewrite whatever it
+// points at - forwarders.conf can be a symlink into a config repository, and
+// clobbering the repository's file instead of replacing the symlink would
+// silently rewrite tracked, version-controlled content.
+func TestWriteUnboundForwardersReplacesSymlink(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	target := filepath.Join(root, "repository-forwarders.conf")
+	forwardersFile := filepath.Join(root, "conf.d", "forwarders.conf")
+	targetContent := "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.1\n"
+	if err := os.WriteFile(target, []byte(targetContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(forwardersFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, forwardersFile); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{Unbound: UnboundConfig{ForwardersFile: forwardersFile}}
+	if err := writeUnboundForwarders(cfg, []string{"198.51.100.53"}); err != nil {
+		t.Fatalf("writeUnboundForwarders() error = %v", err)
+	}
+
+	gotTarget, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotTarget) != targetContent {
+		t.Fatalf("symlink target changed: got %q, want %q", gotTarget, targetContent)
+	}
+	info, err := os.Lstat(forwardersFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("forwarders file is still a symlink")
+	}
+	got, err := os.ReadFile(forwardersFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "forward-addr: 198.51.100.53") {
+		t.Fatalf("forwarders file does not contain selected resolver: %q", got)
+	}
+}
+
+// An empty forwarders_file means the machine has not opted into unbound.
+func TestWriteUnboundForwardersRequiresConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	if err := writeUnboundForwarders(Config{}, []string{"9.9.9.9"}); err == nil {
+		t.Fatal("expected an error when unbound.forwarders_file is empty")
+	}
+}
+
+func TestCurrentUnboundForwarders(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "forwarders.conf")
+	content := "forward-zone:\n  name: \".\"\n  forward-addr: 9.9.9.9\n  forward-addr: 1.1.1.1\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := currentUnboundForwarders(path)
+	want := []string{"9.9.9.9", "1.1.1.1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("currentUnboundForwarders() = %v, want %v", got, want)
+	}
+
+	if got := currentUnboundForwarders(""); got != nil {
+		t.Errorf("currentUnboundForwarders(\"\") = %v, want nil", got)
+	}
+	if got := currentUnboundForwarders(filepath.Join(t.TempDir(), "missing.conf")); got != nil {
+		t.Errorf("currentUnboundForwarders(missing) = %v, want nil", got)
+	}
+}
+
+// The whole point of dns.backend is that writing to the selected backend
+// must never touch the other one, so both can be fully configured at once
+// without the standby backend's file ever changing.
+func TestSyncDNSBackendUpstreamsOnlyTouchesSelectedBackend(t *testing.T) {
+	t.Parallel()
+
+	adguardPath := filepath.Join(t.TempDir(), "upstreams.conf")
+	unboundPath := filepath.Join(t.TempDir(), "forwarders.conf")
+	adguardSeed := "1.1.1.1\n"
+	unboundSeed := "forward-zone:\n  name: \".\"\n  forward-addr: 1.1.1.1\n"
+	if err := os.WriteFile(adguardPath, []byte(adguardSeed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unboundPath, []byte(unboundSeed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		DNS:     DNSConfig{Backend: dnsBackendUnbound},
+		AdGuard: AdGuardConfig{UpstreamsFile: adguardPath},
+		Unbound: UnboundConfig{ForwardersFile: unboundPath},
+	}
+	if err := syncDNSBackendUpstreams(cfg, []string{"9.9.9.9"}, "office"); err != nil {
+		t.Fatalf("syncDNSBackendUpstreams() error = %v", err)
+	}
+
+	gotAdGuard, err := os.ReadFile(adguardPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotAdGuard) != adguardSeed {
+		t.Errorf("AdGuard upstreams file changed while dns.backend was unbound:\ngot:  %q\nwant: %q", gotAdGuard, adguardSeed)
+	}
+	gotUnbound := currentUnboundForwarders(unboundPath)
+	if want := []string{"9.9.9.9"}; !slices.Equal(gotUnbound, want) {
+		t.Errorf("unbound forwarders = %v, want %v", gotUnbound, want)
+	}
+
+	// Now flip the backend and confirm the reverse: AdGuard gets rewritten,
+	// unbound's file (already holding the previous switch's result) is left
+	// exactly as it stands.
+	cfg.DNS.Backend = dnsBackendAdGuard
+	if err := syncDNSBackendUpstreams(cfg, []string{"8.8.8.8"}, "office"); err != nil {
+		t.Fatalf("syncDNSBackendUpstreams() error = %v", err)
+	}
+	gotAdGuardDefaults, _, err := currentAdGuardUpstreams(adguardPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"8.8.8.8"}; !slices.Equal(gotAdGuardDefaults, want) {
+		t.Errorf("AdGuard defaults = %v, want %v", gotAdGuardDefaults, want)
+	}
+	gotUnboundAfter := currentUnboundForwarders(unboundPath)
+	if want := []string{"9.9.9.9"}; !slices.Equal(gotUnboundAfter, want) {
+		t.Errorf("unbound forwarders changed while dns.backend was adguard: got %v, want %v", gotUnboundAfter, want)
+	}
+}
+
 func TestSearchDomainArgs(t *testing.T) {
 	tests := []struct {
 		name    string

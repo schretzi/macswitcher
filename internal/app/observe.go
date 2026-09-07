@@ -19,6 +19,7 @@ type daemonKind int
 const (
 	daemonKindAlpaca daemonKind = iota
 	daemonKindAdGuard
+	daemonKindUnbound
 	daemonKindContainer
 	daemonKindKerberos
 	daemonKindOMT
@@ -89,6 +90,10 @@ func newObserveModel(cfg Config, cfgPath string) observeModel {
 		// elsewhere.
 		{name: appAlpaca, configKey: "", label: launchAgentService().Label(), scope: daemonScopeUser, kind: daemonKindAlpaca},
 		{name: appAdGuard, configKey: appAdGuard, label: cfg.Daemons[appAdGuard].Label, scope: cfg.Daemons[appAdGuard].Scope, kind: daemonKindAdGuard, cfgDaemon: cfg.Daemons[appAdGuard]},
+		// unbound sits directly under AdGuard Home: only one of them is ever
+		// dns.backend, but both can be installed and running at once, and
+		// they are only meaningful read together.
+		{name: appUnbound, configKey: appUnbound, label: cfg.Daemons[appUnbound].Label, scope: cfg.Daemons[appUnbound].Scope, kind: daemonKindUnbound, cfgDaemon: cfg.Daemons[appUnbound]},
 		// apple/container + kiac: the cluster VMs take their DNS from the vmnet
 		// gateway, so this belongs next to the resolvers rather than at the end.
 		{name: appContainer, configKey: appContainer, label: cfg.Daemons[appContainer].Label, scope: cfg.Daemons[appContainer].Scope, kind: daemonKindContainer, cfgDaemon: cfg.Daemons[appContainer]},
@@ -181,6 +186,8 @@ func gatherExtra(cfg Config, row daemonRow) []string {
 		return lsrulesDetail()
 	case daemonKindAdGuard:
 		return adguardDetail(cfg)
+	case daemonKindUnbound:
+		return unboundDetail(cfg)
 	case daemonKindContainer:
 		return containerRuntimeDetail()
 	case daemonKindKerberos:
@@ -254,6 +261,26 @@ func adguardDetail(cfg Config) []string {
 	// having asked for it in this session.
 	if enabled, err := adguardProtectionEnabled(cfg); err == nil && !enabled {
 		lines = append(lines, "filtering: OFF")
+	}
+	return lines
+}
+
+// unboundDetail shows what unbound is actually forwarding to. Unlike
+// AdGuard Home there is no separate per-domain overlay to distinguish -
+// unbound's forwarders file is entirely macswitcher's when dns.backend is
+// "unbound", and entirely not when it isn't.
+func unboundDetail(cfg Config) []string {
+	path := strings.TrimSpace(cfg.Unbound.ForwardersFile)
+	if path == "" {
+		return []string{"not configured (set unbound.forwarders_file to enable)"}
+	}
+	forwarders := currentUnboundForwarders(path)
+	if len(forwarders) == 0 {
+		return []string{"no forward-addr entries in " + path}
+	}
+	lines := []string{"forwarders: " + strings.Join(forwarders, ", ")}
+	if dnsBackend(cfg) != dnsBackendUnbound {
+		lines = append(lines, "dns.backend is adguard - a switch does not rewrite this")
 	}
 	return lines
 }
@@ -485,6 +512,7 @@ func (m observeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 var criticalDaemons = map[string]bool{
 	appAlpaca:  true,
 	appAdGuard: true,
+	appUnbound: true,
 	appPrivoxy: true,
 }
 
@@ -528,6 +556,8 @@ func criticalDaemonWarning(name string) string {
 	case appAlpaca:
 		return "every proxied outbound connection on this machine goes through it"
 	case appAdGuard:
+		return "it is this machine's resolver, so DNS stops"
+	case appUnbound:
 		return "it is this machine's resolver, so DNS stops"
 	case appPrivoxy:
 		return "direct contexts forward through it, so they lose outbound HTTP"

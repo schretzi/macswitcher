@@ -1,0 +1,70 @@
+# Global macswitcher config for the "AdGuard Home + Alpaca" minimal scenario.
+#
+# What's deliberately absent, and why:
+# - no `filter_proxy:` enabled: no Privoxy, no TLS-inspecting filter. Direct
+#   contexts just have alpaca reach the internet itself.
+# - no Kerberos daemon: office.yaml uses a Keychain-backed username/password
+#   instead. Swap to Kerberos/Negotiate later just by keeping a ticket alive
+#   at a known ccache path and configuring KerberosKeepAlive - macswitcher
+#   picks that up automatically without any change here.
+
+local_proxy:
+  host: 127.0.0.1
+  port: 3128
+  no_proxy:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+
+alpaca:
+  enabled: true
+  # `brew install samuong/alpaca/alpaca` puts this on PATH. The {{...}}
+  # placeholders are macswitcher's own - it fills them in from
+  # local_proxy.host/port and drops -C entirely when there is no PAC file
+  # for the active context (e.g. proxy_mode: direct).
+  command:
+    - alpaca
+    - -l
+    - "{{local_host}}"
+    - -p
+    - "{{local_port}}"
+    - -C
+    - "{{pac_file}}"
+
+network_services: []   # empty means auto-detect every active network service
+
+dns:
+  # AdGuard Home, installed by install.sh as a LaunchDaemon on a dedicated
+  # loopback alias (127.0.0.1:53 is already owned by mDNSResponder).
+  local_resolver: 127.0.0.2
+  # Explicit even though it's the default: only the resolver named here is
+  # ever rewritten or restarted by a switch. If unbound is ever installed
+  # alongside this (see onboarding/unbound-alpaca/), it is left completely
+  # untouched as long as this stays "adguard".
+  backend: adguard
+
+adguard:
+  upstreams_file: /etc/adguardhome/upstreams.conf
+  address: 127.0.0.2:3053
+  # install.sh creates this account during first-run setup and stores its
+  # password in the System keychain under the service name below - never
+  # in this file. It's the same account you log into the web UI with;
+  # macswitcher only needs *an* account, not a dedicated one.
+  api_user: admin
+  api_keychain_service: macswitcher-onboarding-adguardhome
+
+daemons:
+  adguardhome:
+    label: com.macswitcher.onboarding.adguardhome
+    scope: system   # a LaunchDaemon, since binding port 53 needs root
+
+applications:
+  adguardhome:
+    # Restarting AdGuard Home is how it picks up the upstreams file
+    # macswitcher just rewrote. Needs the sudoers rule install.sh adds.
+    restart:
+      - sudo
+      - launchctl
+      - kickstart
+      - -k
+      - system/com.macswitcher.onboarding.adguardhome
