@@ -27,7 +27,34 @@ func switchContext(cfgPath string, args []string) error {
 	previous := cfg.CurrentContext
 
 	journal := newSwitchJournal(previous, selected)
+	upstreamsSyncedEarly := false
 	err = func() error {
+		// A context whose DNS goes through the local resolver (AdGuard Home)
+		// can have that resolver's upstreams rewritten to the NEW context's
+		// before preflight runs, as long as nothing here depends on the
+		// network the machine is still on - which is exactly the case for a
+		// context that does not start a VPN. Doing this first means
+		// preflight tests what the switch is actually about to leave the
+		// machine on, rather than the PREVIOUS context's upstreams still
+		// sitting in AdGuard Home - the bug this fixes: switching onto a
+		// network whose internal names only the new context's upstreams can
+		// answer failed preflight every time, because AdGuard was still
+		// forwarding to the old network's resolvers and the corporate names
+		// the new context needs were never going to resolve through those.
+		//
+		// A context that starts a VPN keeps the old order (see applyContext):
+		// the tunnel has to resolve its own gateway through the resolvers
+		// already in place, so rewriting AdGuard first would pull that
+		// resolution onto upstreams that live behind the tunnel that has not
+		// come up yet.
+		if !contextStartsVPN(ctx) && len(ctx.Upstreams) > 0 {
+			if err := journal.step("rewrite AdGuard Home's upstreams and restart it", func() error {
+				return syncAdGuardUpstreams(cfg, ctx.Upstreams, selected)
+			}); err != nil {
+				return err
+			}
+			upstreamsSyncedEarly = true
+		}
 		// Preflight is a step of the switch, so it belongs in the journal:
 		// "the switch never started because nothing resolved" is a different
 		// story from "the switch got half-way", and the report has to be able
@@ -37,7 +64,7 @@ func switchContext(cfgPath string, args []string) error {
 		}); err != nil {
 			return err
 		}
-		return applyContext(cfgPath, cfg, ctx, selected, journal)
+		return applyContext(cfgPath, cfg, ctx, selected, journal, upstreamsSyncedEarly)
 	}()
 	journal.close(err)
 
@@ -113,7 +140,7 @@ func reportFailedSwitch(cfgPath string, cfg Config, journal *switchJournal, logP
 //   - The proxy is changed last, so anything that fails above leaves the
 //     machine on the proxy settings it already had rather than half-way onto
 //     new ones.
-func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string, journal *switchJournal) error {
+func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string, journal *switchJournal, upstreamsSyncedEarly bool) error {
 	cfg.CurrentContext = name
 	if err := journal.step("persist "+name+" as the current context", func() error {
 		return saveRuntimeState(cfgPath, ConfigState{CurrentContext: name})
@@ -141,13 +168,20 @@ func applyContext(cfgPath string, cfg Config, ctx SwitchContext, name string, jo
 		return err
 	}
 
-	if len(ctx.Upstreams) > 0 {
+	switch {
+	case upstreamsSyncedEarly:
+		// Already done, before preflight - see switchContext. Redoing it here
+		// unconditionally would double-log a step that did not fail and,
+		// worse, would mask the case where something between the two steps
+		// left AdGuard Home in a different state than this rewrite expects.
+		journal.skip("rewrite AdGuard Home's upstreams (already applied before preflight)")
+	case len(ctx.Upstreams) > 0:
 		if err := journal.step("rewrite AdGuard Home's upstreams and restart it", func() error {
 			return syncAdGuardUpstreams(cfg, ctx.Upstreams, name)
 		}); err != nil {
 			return err
 		}
-	} else {
+	default:
 		journal.skip("rewrite AdGuard Home's upstreams")
 	}
 
@@ -228,6 +262,20 @@ func syncAdGuardUpstreams(cfg Config, forwarders []string, selected string) erro
 	}
 	restartAdGuardIfConfigured(cfg)
 	return nil
+}
+
+// contextStartsVPN reports whether ctx's apps.start names the "vpn"
+// application - the signal that DNS still has to work through the OLD
+// network's resolvers before this context can do anything, because the
+// tunnel has to resolve its own gateway first. Everything else is free to
+// have AdGuard Home's upstreams rewritten before preflight runs.
+func contextStartsVPN(ctx SwitchContext) bool {
+	for _, app := range ctx.Apps.Start {
+		if strings.EqualFold(strings.TrimSpace(app), "vpn") {
+			return true
+		}
+	}
+	return false
 }
 
 func status(cfgPath string) error {
