@@ -165,7 +165,18 @@ func preflightHosts(ctx SwitchContext) []string {
 		hosts = append(hosts, host)
 	}
 
-	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil {
+	// The forward proxy's own hostname is only checked here for a context
+	// that does NOT start a VPN. A context that does (home-vpn, smartgadget,
+	// vpn-debug) names an internal corporate DNS name here - www-proxy.billa.co.at
+	// resolves only through the corporate resolvers reached over the tunnel,
+	// which does not exist yet at this point in the switch. Requiring it to
+	// resolve before the switch even starts made such a context permanently
+	// unswitchable from a network that cannot reach that name directly - which
+	// is the point of using a VPN context at all. checkDNSResolution proves
+	// this name resolves AFTER the tunnel is up and the upstreams are
+	// rewritten, which is where it belongs; see its comment for why it
+	// retries rather than failing on the first attempt.
+	if isForwardProxyMode(ctx.ProxyMode) && ctx.ForwarderProxy != nil && !contextStartsVPN(ctx) {
 		add(ctx.ForwarderProxy.ProxyServer)
 	}
 	add(ctx.DNS.CheckHost)

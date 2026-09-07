@@ -92,6 +92,29 @@ func TestPreflightHostsDerivesAndDeduplicates(t *testing.T) {
 	}
 }
 
+// A VPN context's forward proxy hostname is an internal corporate DNS name -
+// www-proxy.billa.co.at, reached only through the resolvers the tunnel itself
+// brings up. Requiring it to resolve here, before the switch has done
+// anything, made such a context unswitchable from any network that cannot
+// reach it directly: office -> home-vpn failed preflight every time on a home
+// network, even though the one name that matters before the tunnel exists -
+// the VPN gateway - resolved fine. checkDNSResolution proves the proxy's name
+// resolves once the tunnel and upstreams are in place; preflight must not
+// duplicate that check before it is possible to pass.
+func TestPreflightHostsOmitsForwardProxyForVPNContexts(t *testing.T) {
+	ctx := SwitchContext{
+		ProxyMode:      ProxyModeForward,
+		ForwarderProxy: &ForwarderProxyConfig{ProxyServer: "www-proxy.billa.co.at"},
+		PreflightHosts: []string{"puma.rewe-group.at"},
+		Apps:           LifecycleConfig{Start: []string{"vpn", "kerberos_keep_alive"}},
+	}
+	got := preflightHosts(ctx)
+	want := []string{"puma.rewe-group.at"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("preflightHosts() = %v, want %v (the forward proxy hostname must not be checked pre-tunnel)", got, want)
+	}
+}
+
 // A context that names nothing must not invent a check. google.com is a fine
 // default for "did the switch work" AFTER the fact, but as a precondition it
 // would refuse to switch on any network that resolves only its intranet.
