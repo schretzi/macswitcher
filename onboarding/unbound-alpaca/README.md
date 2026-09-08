@@ -14,7 +14,10 @@ than install AdGuard Home.
 | a sudoers rule | `/etc/sudoers.d/macswitcher-dns-flush` | every switch flushes the DNS cache before checking it worked |
 | a sudoers rule | `/etc/sudoers.d/macswitcher-unbound-restart` | every switch restarts unbound so it picks up the rewritten forwarders |
 
-Nothing else. No AdGuard Home, no Privoxy, no Kerberos daemon. Unbound binds
+Nothing else is required. No AdGuard Home, no Privoxy; KerberosKeepAlive is
+optional and covered separately below, for teams that want alpaca to
+authenticate to the enterprise proxy with a Kerberos ticket instead of just
+a Keychain password. Unbound binds
 a dedicated loopback alias (`127.0.0.2`) instead of plain `127.0.0.1`,
 because `127.0.0.1:53` is already owned by mDNSResponder on macOS —
 `install.sh` creates that alias with a small LaunchDaemon so it survives a
@@ -37,22 +40,47 @@ coexist, only one is ever driven.
 
 - your corporate domain(s) → your corporate DNS servers
 - your VPN gateway/forward-proxy hostname → a public resolver, explicitly
-  (this is not optional — see below)
 
-**Keeping the VPN gateway zone static is not a limitation to work around —
-it is the fix for a real bug.** The maintainer's own AdGuard Home-based setup
-broke exactly because a VPN gateway hostname's resolution depended on which
-context's upstream happened to be active: switch to a context whose upstream
-is corp-internal, and the VPN gateway itself becomes unresolvable, so the
-tunnel that would fix DNS can never start. A static forward-zone for that one
-hostname, pointed permanently at a public resolver, doesn't have that failure
-mode — it resolves the same way regardless of context, network, or whether a
-VPN tunnel is currently up, or whether a switch has even run yet. Give your
-VPN gateway's hostname this treatment even if you don't use a VPN context
-yet; it costs three lines in `unbound.conf` and prevents a very confusing
-failure later.
+That second zone matters if you have a VPN: if its hostname's resolution
+depended on whichever upstream a context happens to set, switching to a
+corp-internal upstream can make the VPN gateway itself unresolvable, so the
+tunnel that would fix DNS can never start. Pointing that one hostname
+permanently at a public resolver sidesteps the problem entirely — it costs
+three lines in `unbound.conf`. If you already run your own VPN script outside
+macswitcher, add its gateway hostname here too; macswitcher doesn't need to
+know about the VPN itself, only that this one name must always resolve.
+
+## Enterprise proxy via alpaca + KerberosKeepAlive
+
+If your Kerberos ticket is already being kept alive at a fixed ccache path
+(e.g. by your own script writing to `~/.krb5cc/corp`), alpaca still needs
+telling — a ticket file existing on disk is not enough by itself. macswitcher
+gets that path from **KerberosKeepAlive**, a small separate daemon that owns
+the ccache file and refreshes it; macswitcher just reads its config and passes
+the path to alpaca as `KRB5CCNAME`. Wire it up once:
+
+1. Install/run KerberosKeepAlive so `~/.config/kerberoskeepalive/config.yaml`
+   has a profile with `ccache_path: /Users/you/.krb5cc/corp` (or wherever your
+   ticket actually lands) and register it as a LaunchAgent.
+2. Add it to `daemons:` in `config.yaml` so `observe` can show and (re)start it:
+   ```yaml
+   daemons:
+     kerberos_keep_alive:
+       label: com.example.kerberoskeepalive
+   ```
+3. Leave `forwarder_proxy.username`/`password_keychain_service` in
+   `contexts/office.yaml` in place — alpaca tries Negotiate (using
+   KerberosKeepAlive's ticket) first, then falls back to Basic with the
+   Keychain password if the ticket is missing or expired. Without that
+   fallback, an expired ticket means the proxy is simply unreachable.
+
+Nothing else changes: the same `office` context and the same alpaca process
+picks this up automatically once KerberosKeepAlive is running.
 
 ## Steps
+
+If unbound and your own VPN script are already running outside macswitcher,
+most of `install.sh` is a no-op for you — it only fills in what's missing.
 
 1. `cd` into this directory (or copy it into your own dotfiles first — these
    files are meant to be edited and kept, not run once and thrown away).
@@ -67,11 +95,13 @@ failure later.
    system service, installs the macswitcher config/contexts, adds the
    sudoers rules, and registers macswitcher's own LaunchAgent (which
    supervises alpaca).
-5. `macswitcher proxy password-set` — stores the office proxy password in
-   Keychain (Kerberos/NTLM negotiate is tried first automatically if your
-   Mac already has a ticket; this is the fallback).
+5. Set up Kerberos, if you want it — see "Enterprise proxy via alpaca +
+   KerberosKeepAlive" above — then `macswitcher proxy password-set` to store
+   the office proxy password in Keychain as the Basic fallback either way.
 6. `macswitcher config validate`
 7. `macswitcher switch home` (or `office`)
+8. `macswitcher observe` — unbound (and, once configured, kerberoskeepalive)
+   both show up here for at-a-glance status and restart.
 
 Re-running `install.sh` after any edit is the supported way to apply a
 change — it's idempotent and backs up anything it would overwrite.

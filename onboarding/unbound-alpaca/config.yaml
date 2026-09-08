@@ -54,6 +54,11 @@ daemons:
   unbound:
     label: homebrew.mxcl.unbound
     scope: system
+  # Optional: uncomment once KerberosKeepAlive is installed and running, so
+  # `observe` can show/restart it and macswitcher knows a Kerberos ticket is
+  # in play (see the README's "Enterprise proxy via alpaca + KerberosKeepAlive").
+  # kerberos_keep_alive:
+  #   label: com.example.kerberoskeepalive
 
 applications:
   unbound:
